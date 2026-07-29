@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { createControllerHand, getFingerLayout } from '../src/hands';
+import { createControllerHand, getFingerLayout, visualHandednessForController } from '../src/hands';
 import { getHandPose, type GamepadLike } from '../src/input';
 import {
   advanceRouteDistance,
@@ -8,6 +8,7 @@ import {
   moveCircleWithCollisions,
   moveRigWithTrackedCollision,
   sampleClosedRoute,
+  routeAgentVisualRotation,
   updateRouteAgentCollider,
   worldPointFromRigLocal,
   type Collider2D,
@@ -61,7 +62,14 @@ describe('city collision', () => {
   it('keeps a collider centered on a moving pedestrian', () => {
     const collider: Collider2D = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
     updateRouteAgentCollider(collider, { x: 5, z: 6 }, 0, 'pedestrian');
-    expect(collider).toEqual({ minX: 4.62, maxX: 5.38, minZ: 5.62, maxZ: 6.38 });
+    expect(collider).toEqual({
+      minX: 4.62,
+      maxX: 5.38,
+      minZ: 5.62,
+      maxZ: 6.38,
+      minY: 0,
+      maxY: 1.95,
+    });
   });
 
   it('transforms the XR reference-space head through the city rig', () => {
@@ -104,6 +112,13 @@ describe('closed routes', () => {
     { x: 0, z: 10 },
   ];
 
+  it('faces pedestrians opposite the raw model orientation while cars remain unchanged', () => {
+    const vehicle = routeAgentVisualRotation(0, 'vehicle');
+    const pedestrian = routeAgentVisualRotation(0, 'pedestrian');
+    expect(vehicle).toBeCloseTo(Math.PI / 2);
+    expect(Math.abs(pedestrian - vehicle)).toBeCloseTo(Math.PI);
+  });
+
   it('wraps route distance without growing forever', () => {
     expect(advanceRouteDistance(39, 3, 1, 40)).toBe(2);
   });
@@ -144,6 +159,11 @@ describe('controller hands', () => {
   it('maps the right trigger to the index finger beside the right thumb', () => {
     const layout = getFingerLayout('right');
     expect(layout.find((finger) => finger.strength === 'trigger')?.x).toBe(0.032);
+  });
+
+  it('swaps controller geometry to match physical Quest hands', () => {
+    expect(visualHandednessForController('left')).toBe('right');
+    expect(visualHandednessForController('right')).toBe('left');
   });
 
   it('uses rounded three-joint anatomy instead of block fingers', () => {

@@ -3,11 +3,25 @@ export interface Point2D {
   z: number;
 }
 
+export interface Point3D extends Point2D {
+  y: number;
+}
+
+export interface BodyCollisionResult {
+  position: Point3D;
+  collidedX: boolean;
+  collidedY: boolean;
+  collidedZ: boolean;
+  landed: boolean;
+}
+
 export interface Collider2D {
   minX: number;
   maxX: number;
   minZ: number;
   maxZ: number;
+  minY?: number;
+  maxY?: number;
 }
 
 export interface RoutePoint extends Point2D {}
@@ -16,7 +30,15 @@ export interface RouteSample extends Point2D {
   yaw: number;
 }
 
-function circleIntersectsBox(point: Point2D, radius: number, box: Collider2D): boolean {
+function colliderIsActiveAtHeight(box: Collider2D, height?: number): boolean {
+  if (height === undefined) return true;
+  if (box.minY !== undefined && height < box.minY) return false;
+  if (box.maxY !== undefined && height > box.maxY) return false;
+  return true;
+}
+
+function circleIntersectsBox(point: Point2D, radius: number, box: Collider2D, height?: number): boolean {
+  if (!colliderIsActiveAtHeight(box, height)) return false;
   const closestX = Math.max(box.minX, Math.min(point.x, box.maxX));
   const closestZ = Math.max(box.minZ, Math.min(point.z, box.maxZ));
   const dx = point.x - closestX;
@@ -29,6 +51,7 @@ function resolveCircleOverlaps(
   radius: number,
   colliders: readonly Collider2D[],
   worldLimit: number,
+  height?: number,
 ): Point2D {
   const limit = Math.max(0, worldLimit - radius);
   const result = {
@@ -39,6 +62,7 @@ function resolveCircleOverlaps(
   for (let pass = 0; pass < 4; pass += 1) {
     let changed = false;
     for (const box of colliders) {
+      if (!colliderIsActiveAtHeight(box, height)) continue;
       const closestX = Math.max(box.minX, Math.min(result.x, box.maxX));
       const closestZ = Math.max(box.minZ, Math.min(result.z, box.maxZ));
       const dx = result.x - closestX;
@@ -91,16 +115,110 @@ export function moveCircleWithCollisions(
   radius: number,
   colliders: readonly Collider2D[],
   worldLimit: number,
+  height?: number,
 ): Point2D {
   const limit = Math.max(0, worldLimit - radius);
   const result = { ...position };
   const candidateX = Math.max(-limit, Math.min(position.x + movement.x, limit));
   const movedX = { x: candidateX, z: result.z };
-  if (!colliders.some((box) => circleIntersectsBox(movedX, radius, box))) result.x = candidateX;
+  if (!colliders.some((box) => circleIntersectsBox(movedX, radius, box, height))) result.x = candidateX;
 
   const candidateZ = Math.max(-limit, Math.min(position.z + movement.z, limit));
   const movedZ = { x: result.x, z: candidateZ };
-  if (!colliders.some((box) => circleIntersectsBox(movedZ, radius, box))) result.z = candidateZ;
+  if (!colliders.some((box) => circleIntersectsBox(movedZ, radius, box, height))) result.z = candidateZ;
+  return result;
+}
+
+export function moveCircleWithCollisionsSubstepped(
+  position: Point2D,
+  movement: Point2D,
+  radius: number,
+  colliders: readonly Collider2D[],
+  worldLimit: number,
+  height?: number,
+  maxStep = 0.18,
+): Point2D {
+  const steps = Math.max(1, Math.ceil(Math.hypot(movement.x, movement.z) / maxStep));
+  const step = { x: movement.x / steps, z: movement.z / steps };
+  let result = { ...position };
+  for (let index = 0; index < steps; index += 1) {
+    result = moveCircleWithCollisions(result, step, radius, colliders, worldLimit, height);
+  }
+  return result;
+}
+
+export function moveBodyWithCollisionsSubstepped(
+  position: Point3D,
+  movement: Point3D,
+  radius: number,
+  bodyHeight: number,
+  colliders: readonly Collider2D[],
+  worldLimit: number,
+  maxStep = 0.18,
+): BodyCollisionResult {
+  const distance = Math.hypot(movement.x, movement.y, movement.z);
+  const steps = Math.max(1, Math.ceil(distance / maxStep));
+  const step = { x: movement.x / steps, y: movement.y / steps, z: movement.z / steps };
+  const result: BodyCollisionResult = {
+    position: { ...position },
+    collidedX: false,
+    collidedY: false,
+    collidedZ: false,
+    landed: false,
+  };
+
+  for (let index = 0; index < steps; index += 1) {
+    result.collidedY = false;
+    result.landed = false;
+    const horizontalCandidate = {
+      x: result.position.x + step.x,
+      z: result.position.z + step.z,
+    };
+    let candidateY = result.position.y + step.y;
+
+    for (const box of colliders) {
+      if (!circleIntersectsBox(horizontalCandidate, radius, box)) continue;
+      const minY = box.minY ?? Number.NEGATIVE_INFINITY;
+      const maxY = box.maxY ?? Number.POSITIVE_INFINITY;
+      if (step.y < 0 && result.position.y >= maxY && candidateY < maxY) {
+        candidateY = maxY;
+        result.collidedY = true;
+        result.landed = true;
+      } else if (
+        step.y > 0
+        && result.position.y + bodyHeight <= minY
+        && candidateY + bodyHeight > minY
+      ) {
+        candidateY = minY - bodyHeight;
+        result.collidedY = true;
+      }
+    }
+
+    if (candidateY < 0) {
+      candidateY = 0;
+      result.collidedY = true;
+      result.landed = true;
+    }
+
+    const activeColliders = colliders.filter((box) => {
+      const minY = box.minY ?? Number.NEGATIVE_INFINITY;
+      const maxY = box.maxY ?? Number.POSITIVE_INFINITY;
+      return candidateY < maxY - 1e-6 && candidateY + bodyHeight > minY + 1e-6;
+    });
+    const moved = moveCircleWithCollisions(
+      { x: result.position.x, z: result.position.z },
+      { x: step.x, z: step.z },
+      radius,
+      activeColliders,
+      worldLimit,
+    );
+    if (Math.abs(moved.x - horizontalCandidate.x) > 1e-8) result.collidedX = true;
+    if (Math.abs(moved.z - horizontalCandidate.z) > 1e-8) result.collidedZ = true;
+    result.position.x = moved.x;
+    result.position.y = candidateY;
+    result.position.z = moved.z;
+  }
+
   return result;
 }
 
@@ -111,13 +229,14 @@ export function moveRigWithTrackedCollision(
   radius: number,
   colliders: readonly Collider2D[],
   worldLimit: number,
+  height?: number,
 ): Point2D {
   const trackedPosition = {
     x: rigPosition.x + trackedOffset.x,
     z: rigPosition.z + trackedOffset.z,
   };
-  const depenetrated = resolveCircleOverlaps(trackedPosition, radius, colliders, worldLimit);
-  const moved = moveCircleWithCollisions(depenetrated, movement, radius, colliders, worldLimit);
+  const depenetrated = resolveCircleOverlaps(trackedPosition, radius, colliders, worldLimit, height);
+  const moved = moveCircleWithCollisions(depenetrated, movement, radius, colliders, worldLimit, height);
   return {
     x: rigPosition.x + moved.x - trackedPosition.x,
     z: rigPosition.z + moved.z - trackedPosition.z,
@@ -125,6 +244,10 @@ export function moveRigWithTrackedCollision(
 }
 
 export type RouteAgentKind = 'vehicle' | 'pedestrian';
+
+export function routeAgentVisualRotation(yaw: number, kind: RouteAgentKind): number {
+  return Math.PI / 2 - yaw + (kind === 'pedestrian' ? Math.PI : 0);
+}
 
 export function updateRouteAgentCollider(
   target: Collider2D,
@@ -143,6 +266,8 @@ export function updateRouteAgentCollider(
   target.maxX = position.x + halfX;
   target.minZ = position.z - halfZ;
   target.maxZ = position.z + halfZ;
+  target.minY = 0;
+  target.maxY = kind === 'vehicle' ? 2.2 : 1.95;
 }
 
 export async function loadAvailable<Key, Value>(

@@ -10,12 +10,17 @@ A first-person WebXR city playground built for Meta Quest with TypeScript, Vite,
 - 12 moving vehicles following closed street routes
 - 10 animated pedestrians following sidewalk routes
 - Mesh-derived collision bounds for buildings and props, plus moving vehicle, pedestrian, room-scale headset, and world-boundary collision
+- Shared detailed city, suburban, and vehicle color atlases with windows, trim, storefronts, and car details
 - Detached rounded controller-tracked hands with articulated trigger, grip, and thumb reactions
-- Quest-safe high-visibility city palettes and mobile lighting
-- Procedural footsteps, jump/landing effects, traffic, crowd, and city ambience
+- Dual-hand sticky tether projectiles with visible ropes and building anchors
+- Fixed-step swing physics with reel-in, air steering, preserved release momentum, and high-speed collision substeps
+- High power jump and speed-driven wind audio
+- Procedural footsteps, jump/landing, tether shoot/attach/release, traffic, crowd, and city ambience
 - Left thumbstick: smooth movement relative to the current headset view
 - Right thumbstick: smooth turn
-- A/X or either thumbstick press: jump
+- A/X or either thumbstick press: high power jump
+- Hold either rear grip/squeeze: fire and maintain that hand's tether
+- Release the rear grip: detach while preserving swing momentum
 - Physical headset movement and look remain active
 - Desktop fallback: click for mouse look, WASD to move, Space to jump
 

@@ -21,6 +21,12 @@ export interface FingerLayout {
 const skinMaterial = new THREE.MeshLambertMaterial({ color: 0xd9a17c });
 const nailMaterial = new THREE.MeshLambertMaterial({ color: 0xf2c7b2 });
 
+export function visualHandednessForController(handedness: XRHandedness): XRHandedness {
+  if (handedness === 'left') return 'right';
+  if (handedness === 'right') return 'left';
+  return handedness;
+}
+
 export function getFingerLayout(handedness: XRHandedness): FingerLayout[] {
   const indexToPinky = handedness === 'left'
     ? [-0.032, -0.011, 0.011, 0.032]

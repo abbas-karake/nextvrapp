@@ -3,12 +3,13 @@ import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { filterAnimationClipToObject, retargetClipToBindPose } from './animation';
-import { configureQuestVisibleModel } from './lighting';
+import { configureQuestVisibleModel, createSharedAtlasMaterial } from './lighting';
 import {
   advanceRouteDistance,
   getClosedRouteLength,
   loadAvailable,
   sampleClosedRoute,
+  routeAgentVisualRotation,
   updateRouteAgentCollider,
   type Collider2D,
   type RoutePoint,
@@ -41,6 +42,7 @@ interface RouteAgent {
 
 export interface CityRuntime {
   colliders: Collider2D[];
+  swingTargets: THREE.Object3D[];
   update: (deltaSeconds: number, playerPosition: THREE.Vector3) => void;
   counts: {
     buildings: number;
@@ -64,8 +66,12 @@ function fallbackColorForAsset(path: string): number {
   return palettes[hash % palettes.length];
 }
 
-function configureModel(object: THREE.Object3D, color = 0xb8cad8): void {
-  configureQuestVisibleModel(object, color);
+function configureModel(
+  object: THREE.Object3D,
+  color = 0xb8cad8,
+  sharedMaterial?: THREE.Material,
+): void {
+  configureQuestVisibleModel(object, color, sharedMaterial);
 }
 
 function configurePedestrianModel(object: THREE.Object3D): void {
@@ -195,6 +201,8 @@ function addStreetlights(scene: THREE.Scene, colliders: Collider2D[]): void {
       maxX: position.x + 0.2,
       minZ: position.z - 0.2,
       maxZ: position.z + 0.2,
+      minY: 0,
+      maxY: 3.8,
     });
   });
   poles.instanceMatrix.needsUpdate = true;
@@ -222,7 +230,7 @@ function addPlaza(scene: THREE.Scene, colliders: Collider2D[]): void {
   plaza.add(basin, water, sculpture);
   plaza.position.set(20, 0, 20);
   scene.add(plaza);
-  colliders.push({ minX: 17.1, maxX: 22.9, minZ: 17.1, maxZ: 22.9 });
+  colliders.push({ minX: 17.1, maxX: 22.9, minZ: 17.1, maxZ: 22.9, minY: 0, maxY: 2.5 });
 }
 
 function createPlacements(): BuildingPlacement[] {
@@ -282,12 +290,25 @@ function createPlacements(): BuildingPlacement[] {
 
 async function loadGltfTemplates(paths: readonly string[]): Promise<Map<string, THREE.Group>> {
   const loader = new GLTFLoader();
+  const textureLoader = new THREE.TextureLoader();
   const unique = [...new Set(paths)];
+  const families = [...new Set(unique.map((path) => path.split('/')[0]))];
+  const atlasMaterials = await loadAvailable(
+    families,
+    async (family) => createSharedAtlasMaterial(
+      await textureLoader.loadAsync(`${BASE}${family}/Textures/colormap.png`),
+    ),
+    (family, error) => console.warn(`Atlas unavailable for ${family}; using model material.`, error),
+  );
   return loadAvailable(
     unique,
     async (path) => {
       const gltf = await loader.loadAsync(`${BASE}${path}`);
-      configureModel(gltf.scene, fallbackColorForAsset(path));
+      configureModel(
+        gltf.scene,
+        fallbackColorForAsset(path),
+        atlasMaterials.get(path.split('/')[0]),
+      );
       return gltf.scene;
     },
     (path, error) => console.warn(`Skipped unavailable city asset: ${path}`, error),
@@ -328,6 +349,7 @@ function addBuildings(
   templates: ReadonlyMap<string, THREE.Group>,
   placements: readonly BuildingPlacement[],
   colliders: Collider2D[],
+  swingTargets: THREE.Object3D[],
 ): void {
   for (const placement of placements) {
     const key = `${placement.family}/${placement.model}`;
@@ -340,6 +362,7 @@ function addBuildings(
     wrapper.position.set(placement.x, 0.18, placement.z);
     wrapper.rotation.y = placement.rotation;
     scene.add(wrapper);
+    swingTargets.push(wrapper);
     wrapper.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(wrapper);
     colliders.push({
@@ -347,6 +370,8 @@ function addBuildings(
       maxX: box.max.x - 0.08,
       minZ: box.min.z + 0.08,
       maxZ: box.max.z - 0.08,
+      minY: box.min.y,
+      maxY: box.max.y,
     });
   }
 }
@@ -366,7 +391,7 @@ function addPrefabTrees(scene: THREE.Scene, templates: ReadonlyMap<string, THREE
     model.position.set(x, 0.18, z);
     model.rotation.y = index * 1.7;
     scene.add(model);
-    colliders.push({ minX: x - 0.32, maxX: x + 0.32, minZ: z - 0.32, maxZ: z + 0.32 });
+    colliders.push({ minX: x - 0.32, maxX: x + 0.32, minZ: z - 0.32, maxZ: z + 0.32, minY: 0, maxY: 4.5 });
   });
 }
 
@@ -470,7 +495,7 @@ function updateAgent(agent: RouteAgent, deltaSeconds: number, playerPosition: TH
   agent.distance = advanceRouteDistance(agent.distance, agent.speed, deltaSeconds, agent.routeLength);
   sampleClosedRoute(agent.route, agent.distance, agent.sample, agent.routeLength);
   agent.object.position.set(agent.sample.x, isVehicle ? 0.09 : 0.18, agent.sample.z);
-  agent.object.rotation.y = Math.PI / 2 - agent.sample.yaw;
+  agent.object.rotation.y = routeAgentVisualRotation(agent.sample.yaw, isVehicle ? 'vehicle' : 'pedestrian');
   const dx = agent.sample.x - playerPosition.x;
   const dz = agent.sample.z - playerPosition.z;
   const visible = dx * dx + dz * dz < agent.visibilityRange * agent.visibilityRange;
@@ -492,6 +517,7 @@ export async function createCityWorld(
   onProgress?: (message: string) => void,
 ): Promise<CityRuntime> {
   const colliders: Collider2D[] = [];
+  const swingTargets: THREE.Object3D[] = [];
   addGroundAndRoads(scene);
   addStreetlights(scene, colliders);
   addPlaza(scene, colliders);
@@ -501,7 +527,7 @@ export async function createCityWorld(
   buildingPaths.push('suburban/tree-large.glb', 'suburban/tree-small.glb');
   onProgress?.('Loading CC0 city buildings…');
   const buildingTemplates = await loadGltfTemplates(buildingPaths);
-  addBuildings(scene, buildingTemplates, placements, colliders);
+  addBuildings(scene, buildingTemplates, placements, colliders, swingTargets);
   addPrefabTrees(scene, buildingTemplates, colliders);
 
   onProgress?.('Loading CC0 city traffic…');
@@ -524,6 +550,7 @@ export async function createCityWorld(
 
   return {
     colliders,
+    swingTargets,
     update,
     counts: {
       buildings: placements.length,
