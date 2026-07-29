@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
+import { GameAudio } from './audio';
 import { CITY_LIMIT, CITY_SPAWN, createCityWorld, type CityRuntime } from './city';
 import { createControllerHand, type ControllerHand } from './hands';
 import { getHandPose, isJumpPressed, readThumbstick, type GamepadLike } from './input';
-import { applyDeadzone, moveFromStick, startJump, stepVertical, type VerticalState } from './locomotion';
+import { applyDeadzone, moveFromViewDirection, startJump, stepVertical, type VerticalState } from './locomotion';
 import { moveRigWithTrackedCollision } from './world';
 import './styles.css';
 
@@ -50,8 +51,8 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'hi
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.35));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.96;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.18;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 root.prepend(renderer.domElement);
@@ -60,8 +61,9 @@ const vrButton = VRButton.createButton(renderer);
 vrButton.id = 'vr-button';
 document.body.appendChild(vrButton);
 
-scene.add(new THREE.HemisphereLight(0xe9f7ff, 0x506247, 2.35));
-const sun = new THREE.DirectionalLight(0xffedc8, 2.75);
+scene.add(new THREE.AmbientLight(0xffffff, 1.65));
+scene.add(new THREE.HemisphereLight(0xe9f7ff, 0x64745d, 1.35));
+const sun = new THREE.DirectionalLight(0xfff2d6, 1.85);
 sun.position.set(-55, 90, 34);
 scene.add(sun);
 const warmFill = new THREE.DirectionalLight(0xffc58f, 0.55);
@@ -86,6 +88,8 @@ try {
 }
 
 const pointerControls = new PointerLockControls(camera, renderer.domElement);
+const gameAudio = new GameAudio();
+addEventListener('pointerdown', () => void gameAudio.unlock(), { passive: true });
 renderer.domElement.addEventListener('click', () => {
   if (!renderer.xr.isPresenting) pointerControls.lock();
 });
@@ -136,13 +140,8 @@ function createController(index: number): ControllerState {
 
 const controllers = [createController(0), createController(1)];
 let jumpWasPressed = false;
-const facing = new THREE.Vector3();
+const viewForward = new THREE.Vector3();
 const trackedHeadWorld = new THREE.Vector3();
-
-function getFacingYaw(): number {
-  camera.getWorldDirection(facing);
-  return Math.atan2(-facing.x, -facing.z);
-}
 
 function getDesktopStick(): { x: number; y: number } {
   return {
@@ -172,10 +171,26 @@ function updatePlayer(deltaSeconds: number): void {
   }
 
   player.rotation.y -= turnInput * TURN_SPEED * deltaSeconds;
-  const movement = moveFromStick(moveStick.x, moveStick.y, getFacingYaw(), MOVE_SPEED, deltaSeconds);
   player.updateMatrixWorld(true);
-  const trackedCamera = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
-  trackedCamera.getWorldPosition(trackedHeadWorld);
+  if (renderer.xr.isPresenting) {
+    const xrCamera = renderer.xr.getCamera();
+    viewForward.set(0, 0, -1).applyQuaternion(xrCamera.quaternion).transformDirection(player.matrixWorld);
+    trackedHeadWorld.copy(xrCamera.position).applyMatrix4(player.matrixWorld);
+  } else {
+    camera.getWorldDirection(viewForward);
+    camera.getWorldPosition(trackedHeadWorld);
+  }
+  viewForward.y = 0;
+  if (viewForward.lengthSq() < 1e-6) viewForward.set(0, 0, -1);
+  viewForward.normalize();
+  const movement = moveFromViewDirection(
+    moveStick.x,
+    moveStick.y,
+    viewForward.x,
+    viewForward.z,
+    MOVE_SPEED,
+    deltaSeconds,
+  );
   const next = moveRigWithTrackedCollision(
     { x: player.position.x, z: player.position.z },
     {
@@ -190,15 +205,22 @@ function updatePlayer(deltaSeconds: number): void {
   player.position.x = next.x;
   player.position.z = next.z;
 
-  if (jumpPressed && !jumpWasPressed) verticalState = startJump(verticalState, JUMP_SPEED);
+  const wasGrounded = verticalState.grounded;
+  if (jumpPressed && !jumpWasPressed && verticalState.grounded) {
+    verticalState = startJump(verticalState, JUMP_SPEED);
+    gameAudio.play('jump');
+  }
   jumpWasPressed = jumpPressed;
   verticalState = stepVertical(verticalState, deltaSeconds, GRAVITY);
+  if (!wasGrounded && verticalState.grounded) gameAudio.play('land');
   player.position.y = verticalState.height;
+  gameAudio.update(Math.hypot(movement.x, movement.z) > 0.002, verticalState.grounded, deltaSeconds);
 }
 
 renderer.xr.addEventListener('sessionstart', () => {
   document.body.classList.add('in-vr');
-  renderer.xr.setFoveation(1);
+  void gameAudio.unlock();
+  renderer.xr.setFoveation(0.65);
   if (status) status.textContent = 'VR active — explore the open city';
 });
 renderer.xr.addEventListener('sessionend', () => {

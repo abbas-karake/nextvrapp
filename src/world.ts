@@ -72,6 +72,19 @@ function resolveCircleOverlaps(
   return result;
 }
 
+export function worldPointFromRigLocal(
+  rigPosition: Point2D,
+  rigYaw: number,
+  localPoint: Point2D,
+): Point2D {
+  const cosine = Math.cos(rigYaw);
+  const sine = Math.sin(rigYaw);
+  return {
+    x: rigPosition.x + localPoint.x * cosine + localPoint.z * sine,
+    z: rigPosition.z - localPoint.x * sine + localPoint.z * cosine,
+  };
+}
+
 export function moveCircleWithCollisions(
   position: Point2D,
   movement: Point2D,
@@ -109,6 +122,27 @@ export function moveRigWithTrackedCollision(
     x: rigPosition.x + moved.x - trackedPosition.x,
     z: rigPosition.z + moved.z - trackedPosition.z,
   };
+}
+
+export type RouteAgentKind = 'vehicle' | 'pedestrian';
+
+export function updateRouteAgentCollider(
+  target: Collider2D,
+  position: Point2D,
+  yaw: number,
+  kind: RouteAgentKind,
+): void {
+  let halfX = 0.38;
+  let halfZ = 0.38;
+  if (kind === 'vehicle') {
+    const horizontal = Math.abs(Math.cos(yaw)) > 0.7;
+    halfX = horizontal ? 2 : 0.9;
+    halfZ = horizontal ? 0.9 : 2;
+  }
+  target.minX = position.x - halfX;
+  target.maxX = position.x + halfX;
+  target.minZ = position.z - halfZ;
+  target.maxZ = position.z + halfZ;
 }
 
 export async function loadAvailable<Key, Value>(

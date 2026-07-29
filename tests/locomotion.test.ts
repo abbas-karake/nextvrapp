@@ -3,6 +3,7 @@ import {
   applyDeadzone,
   getTerrainHeight,
   moveFromStick,
+  moveFromViewDirection,
   startJump,
   stepVertical,
 } from '../src/locomotion';
@@ -25,10 +26,22 @@ describe('moveFromStick', () => {
     expect(moveFromStick(0, -1, 0, 3, 0.5)).toEqual({ x: 0, z: -1.5 });
   });
 
-  it('rotates forward movement with player yaw', () => {
-    const movement = moveFromStick(0, -1, Math.PI / 2, 2, 1);
-    expect(movement.x).toBeCloseTo(-2);
-    expect(movement.z).toBeCloseTo(0);
+  it.each([
+    ['forward', 0, -1, 0, -1],
+    ['back', 0, 1, 0, 1],
+    ['left', -1, 0, -1, 0],
+    ['right', 1, 0, 1, 0],
+  ])('moves %s relative to the current view', (_name, stickX, stickY, expectedX, expectedZ) => {
+    const movement = moveFromViewDirection(stickX as number, stickY as number, 0, -1, 2, 0.5);
+    expect(movement.x).toBeCloseTo(expectedX as number);
+    expect(movement.z).toBeCloseTo(expectedZ as number);
+  });
+
+  it('keeps forward-turn diagonals aligned with the new viewer direction', () => {
+    const movement = moveFromViewDirection(0.5, -1, 1, 0, 2, 0.5);
+    expect(movement.x).toBeGreaterThan(0);
+    expect(movement.z).toBeGreaterThan(0);
+    expect(Math.hypot(movement.x, movement.z)).toBeLessThanOrEqual(1);
   });
 });
 

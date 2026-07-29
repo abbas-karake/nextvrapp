@@ -1,5 +1,6 @@
+import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { getFingerLayout } from '../src/hands';
+import { createControllerHand, getFingerLayout } from '../src/hands';
 import { getHandPose, type GamepadLike } from '../src/input';
 import {
   advanceRouteDistance,
@@ -7,6 +8,8 @@ import {
   moveCircleWithCollisions,
   moveRigWithTrackedCollision,
   sampleClosedRoute,
+  updateRouteAgentCollider,
+  worldPointFromRigLocal,
   type Collider2D,
   type RoutePoint,
 } from '../src/world';
@@ -53,6 +56,18 @@ describe('city collision', () => {
       10,
     );
     expect(result.x).toBe(9.7);
+  });
+
+  it('keeps a collider centered on a moving pedestrian', () => {
+    const collider: Collider2D = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+    updateRouteAgentCollider(collider, { x: 5, z: 6 }, 0, 'pedestrian');
+    expect(collider).toEqual({ minX: 4.62, maxX: 5.38, minZ: 5.62, maxZ: 6.38 });
+  });
+
+  it('transforms the XR reference-space head through the city rig', () => {
+    const world = worldPointFromRigLocal({ x: 18, z: 8 }, -Math.PI / 2, { x: 0.5, z: -1 });
+    expect(world.x).toBeCloseTo(19);
+    expect(world.z).toBeCloseTo(8.5);
   });
 
   it('uses the tracked head offset when testing stick movement', () => {
@@ -129,6 +144,15 @@ describe('controller hands', () => {
   it('maps the right trigger to the index finger beside the right thumb', () => {
     const layout = getFingerLayout('right');
     expect(layout.find((finger) => finger.strength === 'trigger')?.x).toBe(0.032);
+  });
+
+  it('uses rounded three-joint anatomy instead of block fingers', () => {
+    const hand = createControllerHand('right');
+    let capsuleCount = 0;
+    hand.object.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.geometry.type === 'CapsuleGeometry') capsuleCount += 1;
+    });
+    expect(capsuleCount).toBeGreaterThanOrEqual(14);
   });
 
   it('maps analog trigger, grip, and thumb controls', () => {

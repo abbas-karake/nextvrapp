@@ -2,12 +2,14 @@ import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { filterAnimationClipToObject } from './animation';
+import { filterAnimationClipToObject, retargetClipToBindPose } from './animation';
+import { configureQuestVisibleModel } from './lighting';
 import {
   advanceRouteDistance,
   getClosedRouteLength,
   loadAvailable,
   sampleClosedRoute,
+  updateRouteAgentCollider,
   type Collider2D,
   type RoutePoint,
   type RouteSample,
@@ -51,32 +53,44 @@ const BASE = `${import.meta.env.BASE_URL}assets/models/`;
 const blockCenters = [-60, -20, 20, 60] as const;
 const roadCenters = [-80, -40, 0, 40, 80] as const;
 
-function configureModel(object: THREE.Object3D): void {
+function fallbackColorForAsset(path: string): number {
+  const palettes = path.startsWith('cars/')
+    ? [0xe63946, 0x457b9d, 0xf4a261, 0x2a9d8f, 0xf1c40f, 0xe76f51]
+    : path.startsWith('suburban/')
+      ? [0xe9c46a, 0xa8dadc, 0xf4a261, 0x90be6d, 0xd4a5a5]
+      : [0xd9e6f2, 0xf2d0a7, 0xb8d8ba, 0xc9c3e6, 0xe7b8a2, 0xa9c8e8];
+  let hash = 0;
+  for (const character of path) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return palettes[hash % palettes.length];
+}
+
+function configureModel(object: THREE.Object3D, color = 0xb8cad8): void {
+  configureQuestVisibleModel(object, color);
+}
+
+function configurePedestrianModel(object: THREE.Object3D): void {
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
-    child.castShadow = false;
-    child.receiveShadow = true;
-    child.frustumCulled = true;
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
-    for (const material of materials) {
-      if ('map' in material && material.map instanceof THREE.Texture) {
-        material.map.colorSpace = THREE.SRGBColorSpace;
-      }
-    }
+    const name = child.name.toLowerCase();
+    const color = name.includes('head') ? 0xd9a17c
+      : name.includes('feet') ? 0x293241
+        : name.includes('legs') ? 0x52677d
+          : 0x3f83d4;
+    configureQuestVisibleModel(child, color);
   });
 }
 
 function addGroundAndRoads(scene: THREE.Scene): void {
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(250, 250),
-    new THREE.MeshStandardMaterial({ color: 0x668a52, roughness: 1 }),
+    new THREE.MeshLambertMaterial({ color: 0x769d61 }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.02;
   ground.receiveShadow = true;
   scene.add(ground);
 
-  const roadMaterial = new THREE.MeshStandardMaterial({ color: 0x292e35, roughness: 0.96 });
+  const roadMaterial = new THREE.MeshLambertMaterial({ color: 0x4a535d });
   for (const coordinate of roadCenters) {
     const vertical = new THREE.Mesh(new THREE.BoxGeometry(9, 0.08, 240), roadMaterial);
     vertical.position.set(coordinate, 0.025, 0);
@@ -88,7 +102,7 @@ function addGroundAndRoads(scene: THREE.Scene): void {
   const sidewalkGeometry = new THREE.BoxGeometry(31, 0.18, 31);
   const sidewalks = new THREE.InstancedMesh(
     sidewalkGeometry,
-    new THREE.MeshStandardMaterial({ color: 0xbcc0bd, roughness: 0.94 }),
+    new THREE.MeshLambertMaterial({ color: 0xd0d4d2 }),
     blockCenters.length ** 2,
   );
   const matrix = new THREE.Matrix4();
@@ -273,7 +287,7 @@ async function loadGltfTemplates(paths: readonly string[]): Promise<Map<string, 
     unique,
     async (path) => {
       const gltf = await loader.loadAsync(`${BASE}${path}`);
-      configureModel(gltf.scene);
+      configureModel(gltf.scene, fallbackColorForAsset(path));
       return gltf.scene;
     },
     (path, error) => console.warn(`Skipped unavailable city asset: ${path}`, error),
@@ -408,7 +422,7 @@ function createPedestrianRoutes(): RoutePoint[][] {
   ];
 }
 
-async function addPedestrians(scene: THREE.Scene): Promise<RouteAgent[]> {
+async function addPedestrians(scene: THREE.Scene, colliders: Collider2D[]): Promise<RouteAgent[]> {
   const loader = new FBXLoader();
   const [source, clipResponse] = await Promise.all([
     loader.loadAsync(`${BASE}people/casual2.fbx`),
@@ -416,8 +430,9 @@ async function addPedestrians(scene: THREE.Scene): Promise<RouteAgent[]> {
   ]);
   if (!clipResponse.ok) throw new Error(`Walk animation request failed: ${clipResponse.status}`);
   const parsedWalkClip = THREE.AnimationClip.parse(await clipResponse.json());
-  const walkClip = filterAnimationClipToObject(parsedWalkClip, source);
-  configureModel(source);
+  const filteredWalkClip = filterAnimationClipToObject(parsedWalkClip, source);
+  const walkClip = retargetClipToBindPose(filteredWalkClip);
+  configurePedestrianModel(source);
   const routes = createPedestrianRoutes();
   const agents: RouteAgent[] = [];
   for (let index = 0; index < 10; index += 1) {
@@ -434,6 +449,8 @@ async function addPedestrians(scene: THREE.Scene): Promise<RouteAgent[]> {
       action.play();
       action.time = (index * 0.37) % Math.max(walkClip.duration, 0.1);
     }
+    const collider: Collider2D = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+    colliders.push(collider);
     agents.push({
       object: wrapper,
       route,
@@ -441,6 +458,7 @@ async function addPedestrians(scene: THREE.Scene): Promise<RouteAgent[]> {
       distance: (routeLength * index) / 10,
       speed: 0.85 + (index % 4) * 0.11,
       sample: { x: 0, z: 0, yaw: 0 },
+      collider,
       mixer,
       visibilityRange: 88,
     });
@@ -460,13 +478,12 @@ function updateAgent(agent: RouteAgent, deltaSeconds: number, playerPosition: TH
   if (visible) agent.mixer?.update(deltaSeconds);
 
   if (agent.collider) {
-    const horizontal = Math.abs(Math.cos(agent.sample.yaw)) > 0.7;
-    const halfX = horizontal ? 2.0 : 0.9;
-    const halfZ = horizontal ? 0.9 : 2.0;
-    agent.collider.minX = agent.sample.x - halfX;
-    agent.collider.maxX = agent.sample.x + halfX;
-    agent.collider.minZ = agent.sample.z - halfZ;
-    agent.collider.maxZ = agent.sample.z + halfZ;
+    updateRouteAgentCollider(
+      agent.collider,
+      agent.sample,
+      agent.sample.yaw,
+      isVehicle ? 'vehicle' : 'pedestrian',
+    );
   }
 }
 
@@ -495,7 +512,7 @@ export async function createCityWorld(
   onProgress?.('Loading animated pedestrians…');
   let pedestrians: RouteAgent[] = [];
   try {
-    pedestrians = await addPedestrians(scene);
+    pedestrians = await addPedestrians(scene, colliders);
   } catch (error) {
     console.warn('Pedestrian asset unavailable; continuing without pedestrians.', error);
   }

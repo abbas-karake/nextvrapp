@@ -17,6 +17,30 @@ export function applyDeadzone(value: number, deadzone = 0.15): number {
   return Math.sign(value) * Math.min(scaled, 1);
 }
 
+export function moveFromViewDirection(
+  stickX: number,
+  stickY: number,
+  forwardX: number,
+  forwardZ: number,
+  speed: number,
+  deltaSeconds: number,
+): Movement2D {
+  const forwardLength = Math.hypot(forwardX, forwardZ);
+  const fx = forwardLength > 1e-6 ? forwardX / forwardLength : 0;
+  const fz = forwardLength > 1e-6 ? forwardZ / forwardLength : -1;
+  const rightX = -fz;
+  const rightZ = fx;
+  const strafe = applyDeadzone(stickX);
+  const forward = -applyDeadzone(stickY);
+  const inputLength = Math.hypot(strafe, forward);
+  const normalizedScale = inputLength > 1 ? 1 / inputLength : 1;
+  const distance = speed * deltaSeconds * normalizedScale;
+  return {
+    x: (fx * forward + rightX * strafe) * distance,
+    z: (fz * forward + rightZ * strafe) * distance,
+  };
+}
+
 export function moveFromStick(
   stickX: number,
   stickY: number,
