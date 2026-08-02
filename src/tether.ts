@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { TetherConstraint } from './swing';
+import type { RopeAttachment } from './traversal-types';
 
 export type GripTetherAction = 'idle' | 'fire' | 'hold' | 'release';
 export type TetherEvent = 'attached' | 'missed';
@@ -29,6 +30,10 @@ export class VisualTether {
   private readonly start = new THREE.Vector3();
   private readonly target = new THREE.Vector3();
   private readonly anchor = new THREE.Vector3();
+  private readonly anchorNormal = new THREE.Vector3();
+  private readonly anchorLocalPoint = new THREE.Vector3();
+  private readonly normalMatrix = new THREE.Matrix3();
+  private anchorObjectId = '';
   private traveled = 0;
   private targetDistance = 0;
   private willAttach = false;
@@ -51,7 +56,7 @@ export class VisualTether {
   fire(
     origin: THREE.Vector3,
     direction: THREE.Vector3,
-    targets: readonly THREE.Object3D[],
+    targets: THREE.Object3D[],
     bodyPosition: THREE.Vector3,
   ): void {
     this.release();
@@ -59,13 +64,30 @@ export class VisualTether {
     const normalizedDirection = direction.clone().normalize();
     this.raycaster.set(origin, normalizedDirection);
     this.raycaster.near = 0.15;
-    this.raycaster.far = 72;
-    const hit = this.raycaster.intersectObjects(Array.from(targets), true)[0];
+    this.raycaster.far = 80;
+    const hit = this.raycaster.intersectObjects(targets, true)[0];
     if (hit) {
       this.target.copy(hit.point);
-      this.willAttach = true;
+      let swingObject: THREE.Object3D | null = hit.object;
+      while (swingObject && swingObject.userData.swingable !== true) swingObject = swingObject.parent;
+      if (swingObject && hit.distance >= 2) {
+        this.anchorObjectId = String(swingObject.userData.swingObjectId ?? swingObject.uuid);
+        this.anchorLocalPoint.copy(hit.point);
+        swingObject.worldToLocal(this.anchorLocalPoint);
+        if (hit.face) {
+          this.normalMatrix.getNormalMatrix(hit.object.matrixWorld);
+          this.anchorNormal.copy(hit.face.normal).applyMatrix3(this.normalMatrix).normalize();
+        } else {
+          this.anchorNormal.copy(normalizedDirection).multiplyScalar(-1);
+        }
+        this.willAttach = true;
+      } else {
+        this.anchorObjectId = '';
+        this.willAttach = false;
+      }
     } else {
-      this.target.copy(origin).addScaledVector(normalizedDirection, 72);
+      this.target.copy(origin).addScaledVector(normalizedDirection, 80);
+      this.anchorObjectId = '';
       this.willAttach = false;
     }
     this.targetDistance = origin.distanceTo(this.target);
@@ -112,6 +134,20 @@ export class VisualTether {
 
   isAttached(): boolean {
     return this.mode === 'attached';
+  }
+
+  getAttachment(): RopeAttachment | undefined {
+    if (!this.isAttached()) return undefined;
+    return {
+      point: { x: this.anchor.x, y: this.anchor.y, z: this.anchor.z },
+      normal: { x: this.anchorNormal.x, y: this.anchorNormal.y, z: this.anchorNormal.z },
+      objectId: this.anchorObjectId,
+      localPoint: {
+        x: this.anchorLocalPoint.x,
+        y: this.anchorLocalPoint.y,
+        z: this.anchorLocalPoint.z,
+      },
+    };
   }
 
   getConstraint(): TetherConstraint | undefined {

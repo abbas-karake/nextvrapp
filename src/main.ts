@@ -4,10 +4,14 @@ import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { GameAudio } from './audio';
 import { CITY_LIMIT, CITY_SPAWN, createCityWorld, type CityRuntime } from './city';
 import { createControllerHand, visualHandednessForController, type ControllerHand } from './hands';
-import { getHandPose, isJumpPressed, readThumbstick, type GamepadLike } from './input';
+import { getHandPose, isJumpPressed, readThumbstick, ropeButtonAction, type GamepadLike, type RopeButtonAction } from './input';
 import { applyDeadzone, moveFromViewDirection } from './locomotion';
-import { shouldUseGroundLocomotion, stepSwingPhysics, type SwingState, type TetherConstraint } from './swing';
-import { gripTetherAction, VisualTether } from './tether';
+import { shouldUseGroundLocomotion } from './swing';
+import { resolveTraversalGrounded, stepTraversalPhysics, type TraversalPhysicsState } from './rope-physics';
+import { traversalConfig } from './traversal-config';
+import { attachRope, beginRopeFlight, createRopeState, releaseRope } from './traversal-controller';
+import type { RopeState } from './traversal-types';
+import { VisualTether } from './tether';
 import { moveBodyWithCollisionsSubstepped, moveRigWithTrackedCollision } from './world';
 import './styles.css';
 
@@ -28,10 +32,10 @@ root.innerHTML = `
     <div class="controls">
       <div><span>MOVE</span> Left stick · Right stick turn</div>
       <div><span>POWER JUMP</span> A/X or press either stick</div>
-      <div><span>TETHER</span> Hold either rear grip · release to fly</div>
+      <div><span>TETHER</span> Hold either trigger · release to fly</div>
       <div><span>DESKTOP</span> WASD · mouse · Space</div>
     </div>
-    <p class="hint">Aim a hand at a building, squeeze the rear grip, swing, then release with your momentum.</p>
+    <p class="hint">Aim a hand at a building, hold its trigger, pull and swing, then release with your momentum.</p>
   </div>
   <div id="crosshair" aria-hidden="true"></div>
 `;
@@ -75,6 +79,7 @@ scene.add(warmFill);
 let city: CityRuntime = {
   colliders: [],
   swingTargets: [],
+  ropeRaycastTargets: [],
   update: () => undefined,
   counts: { buildings: 0, vehicles: 0, pedestrians: 0 },
 };
@@ -111,16 +116,24 @@ interface ControllerState {
   tether: VisualTether;
   inputSource?: XRInputSource;
   hand?: ControllerHand;
-  gripHeld: boolean;
-  queuedFire: boolean;
-  queuedRelease: boolean;
+  rope?: RopeState;
+  buttonHeld: boolean;
+  pendingActions: RopeButtonAction[];
+  worldHandPosition: THREE.Vector3;
 }
 
-function releaseControllerTether(state: ControllerState): void {
-  if (state.tether.release()) gameAudio.play('release');
-  state.gripHeld = false;
-  state.queuedFire = false;
-  state.queuedRelease = false;
+const ropeStates: Record<'left' | 'right', RopeState> = {
+  left: createRopeState('left', traversalConfig.rope.minimumLength, traversalConfig.rope.maximumLength),
+  right: createRopeState('right', traversalConfig.rope.minimumLength, traversalConfig.rope.maximumLength),
+};
+const activeRopes = [ropeStates.left, ropeStates.right];
+
+function releaseControllerTether(state: ControllerState, clearPending = false): void {
+  const visualReleased = state.tether.release();
+  const ropeReleased = state.rope ? releaseRope(state.rope) : false;
+  if (visualReleased || ropeReleased) gameAudio.play('release');
+  state.buttonHeld = false;
+  if (clearPending) state.pendingActions.length = 0;
 }
 
 function createController(index: number): ControllerState {
@@ -130,14 +143,18 @@ function createController(index: number): ControllerState {
     targetRay,
     grip,
     tether: new VisualTether(scene, index === 0 ? 0x67e8f9 : 0xf0abfc),
-    gripHeld: false,
-    queuedFire: false,
-    queuedRelease: false,
+    buttonHeld: false,
+    pendingActions: [],
+    worldHandPosition: new THREE.Vector3(),
   };
 
   targetRay.addEventListener('connected', (event) => {
     const source = (event as unknown as { data: XRInputSource }).data;
+    releaseControllerTether(state, true);
     state.inputSource = source;
+    state.rope = source.handedness === 'left' || source.handedness === 'right'
+      ? ropeStates[source.handedness]
+      : undefined;
     if (state.hand) grip.remove(state.hand.object);
     if (source.handedness === 'left' || source.handedness === 'right') {
       state.hand = createControllerHand(visualHandednessForController(source.handedness));
@@ -145,15 +162,16 @@ function createController(index: number): ControllerState {
       grip.add(state.hand.object);
     }
   });
-  targetRay.addEventListener('squeezestart', () => {
-    state.queuedFire = true;
+  targetRay.addEventListener('selectstart', () => {
+    state.pendingActions.push('fire');
   });
-  targetRay.addEventListener('squeezeend', () => {
-    state.queuedRelease = true;
+  targetRay.addEventListener('selectend', () => {
+    state.pendingActions.push('release');
   });
   targetRay.addEventListener('disconnected', () => {
     state.inputSource = undefined;
-    releaseControllerTether(state);
+    releaseControllerTether(state, true);
+    state.rope = undefined;
     if (state.hand) {
       grip.remove(state.hand.object);
       state.hand = undefined;
@@ -166,14 +184,16 @@ function createController(index: number): ControllerState {
 
 const controllers = [createController(0), createController(1)];
 let jumpWasPressed = false;
-let motionState: SwingState = {
+let motionState: TraversalPhysicsState = {
   position: { x: CITY_SPAWN.x, y: 0, z: CITY_SPAWN.z },
   velocity: { x: 0, y: 0, z: 0 },
   grounded: true,
+  physicsRemainder: 0,
 };
 const viewForward = new THREE.Vector3();
 const trackedHeadWorld = new THREE.Vector3();
-const handWorld = new THREE.Vector3();
+const leftRopeOffset = new THREE.Vector3(0, BODY_OFFSET_Y, 0);
+const rightRopeOffset = new THREE.Vector3(0, BODY_OFFSET_Y, 0);
 const aimDirection = new THREE.Vector3();
 const bodyWorld = new THREE.Vector3();
 
@@ -185,13 +205,15 @@ function getDesktopStick(): { x: number; y: number } {
 }
 
 function beginControllerTether(state: ControllerState): void {
+  if (!state.rope) return;
   state.targetRay.updateWorldMatrix(true, false);
   state.grip.updateWorldMatrix(true, false);
-  state.grip.getWorldPosition(handWorld);
+  state.grip.getWorldPosition(state.worldHandPosition);
   aimDirection.set(0, 0, -1).transformDirection(state.targetRay.matrixWorld);
   bodyWorld.set(player.position.x, player.position.y + BODY_OFFSET_Y, player.position.z);
-  state.tether.fire(handWorld, aimDirection, city.swingTargets, bodyWorld);
-  state.gripHeld = true;
+  beginRopeFlight(state.rope);
+  state.tether.fire(state.worldHandPosition, aimDirection, city.ropeRaycastTargets, bodyWorld);
+  state.buttonHeld = true;
   gameAudio.play('shoot');
 }
 
@@ -229,33 +251,59 @@ function updatePlayer(deltaSeconds: number): void {
   if (viewForward.lengthSq() < 1e-6) viewForward.set(0, 0, -1);
   viewForward.normalize();
 
+  leftRopeOffset.set(0, BODY_OFFSET_Y, 0);
+  rightRopeOffset.set(0, BODY_OFFSET_Y, 0);
   for (const controller of controllers) {
     const source = controller.inputSource;
     const nativeGamepad = source?.gamepad;
-    let action = controller.gripHeld ? 'hold' : 'idle';
-    if (controller.queuedFire) {
-      action = 'fire';
-      controller.queuedFire = false;
-    } else if (controller.queuedRelease) {
-      action = 'release';
-      controller.queuedRelease = false;
-    } else if (nativeGamepad?.mapping === 'xr-standard' && nativeGamepad.buttons[1]) {
-      action = gripTetherAction(controller.gripHeld, nativeGamepad.buttons[1].value);
+    const queuedActionCount = controller.pendingActions.length;
+    for (let actionIndex = 0; actionIndex < queuedActionCount; actionIndex += 1) {
+      const action = controller.pendingActions[actionIndex];
+      if (action === 'fire' && !controller.buttonHeld) beginControllerTether(controller);
+      if (action === 'release') releaseControllerTether(controller);
     }
-    if (action === 'fire' && !controller.gripHeld) beginControllerTether(controller);
-    if (action === 'release') releaseControllerTether(controller);
+    controller.pendingActions.length = 0;
+
+    if (queuedActionCount === 0 && nativeGamepad?.mapping === 'xr-standard' && nativeGamepad.buttons[0]) {
+      const action = ropeButtonAction(controller.buttonHeld, nativeGamepad.buttons[0].value);
+      if (action === 'fire' && !controller.buttonHeld) beginControllerTether(controller);
+      if (action === 'release') releaseControllerTether(controller);
+    }
 
     controller.grip.updateWorldMatrix(true, false);
-    controller.grip.getWorldPosition(handWorld);
-    const tetherEvent = controller.tether.update(deltaSeconds, handWorld);
-    if (tetherEvent === 'attached') gameAudio.play('attach');
+    controller.grip.getWorldPosition(controller.worldHandPosition);
+    if (source?.handedness === 'left') {
+      leftRopeOffset.set(
+        controller.worldHandPosition.x - player.position.x,
+        controller.worldHandPosition.y - player.position.y,
+        controller.worldHandPosition.z - player.position.z,
+      );
+    } else if (source?.handedness === 'right') {
+      rightRopeOffset.set(
+        controller.worldHandPosition.x - player.position.x,
+        controller.worldHandPosition.y - player.position.y,
+        controller.worldHandPosition.z - player.position.z,
+      );
+    }
+    const tetherEvent = controller.tether.update(deltaSeconds, controller.worldHandPosition);
+    if (tetherEvent === 'attached' && controller.rope) {
+      const attachment = controller.tether.getAttachment();
+      if (attachment) {
+        attachRope(
+          controller.rope,
+          attachment,
+          controller.worldHandPosition,
+          performance.now(),
+          traversalConfig.rope.attachmentPreload,
+        );
+        gameAudio.play('attach');
+      }
+    } else if (tetherEvent === 'missed' && controller.rope) {
+      releaseRope(controller.rope);
+    }
   }
 
-  const attachedControllers = controllers.filter((controller) => controller.tether.isAttached());
-  const constraints = attachedControllers
-    .map((controller) => controller.tether.getConstraint())
-    .filter((constraint): constraint is TetherConstraint => constraint !== undefined);
-  const tethered = constraints.length > 0;
+  const tethered = activeRopes.some((rope) => rope.active);
 
   const jumpStarted = jumpPressed && !jumpWasPressed && motionState.grounded;
   if (jumpStarted) {
@@ -299,44 +347,53 @@ function updatePlayer(deltaSeconds: number): void {
     player.position.x = next.x;
     player.position.z = next.z;
     player.position.y = 0;
-    motionState = {
-      position: { x: next.x, y: 0, z: next.z },
-      velocity: { x: 0, y: 0, z: 0 },
-      grounded: true,
-    };
+    motionState.position.x = next.x;
+    motionState.position.y = 0;
+    motionState.position.z = next.z;
+    motionState.velocity.x = 0;
+    motionState.velocity.y = 0;
+    motionState.velocity.z = 0;
+    motionState.grounded = true;
   } else {
-    const previous = { ...motionState.position };
-    const result = stepSwingPhysics(
+    const previousX = motionState.position.x;
+    const previousY = motionState.position.y;
+    const previousZ = motionState.position.z;
+    const physicsSteps = stepTraversalPhysics(
       motionState,
-      constraints,
-      { x: controlDirection.x, z: controlDirection.z, reel: tethered },
-      deltaSeconds,
-      { bodyOffsetY: BODY_OFFSET_Y, reelSpeed: 4.5, minimumRopeLength: 2, maxSpeed: 28 },
-    );
-    const desired = result.state.position;
-    const collision = moveBodyWithCollisionsSubstepped(
-      { x: trackedHeadWorld.x, y: previous.y, z: trackedHeadWorld.z },
+      activeRopes,
       {
-        x: desired.x - previous.x,
-        y: desired.y - previous.y,
-        z: desired.z - previous.z,
+        x: controlDirection.x,
+        z: controlDirection.z,
+        leftRopeOffset,
+        rightRopeOffset,
+      },
+      deltaSeconds,
+      traversalConfig,
+    );
+    const desired = motionState.position;
+    const collision = moveBodyWithCollisionsSubstepped(
+      { x: trackedHeadWorld.x, y: previousY, z: trackedHeadWorld.z },
+      {
+        x: desired.x - previousX,
+        y: desired.y - previousY,
+        z: desired.z - previousZ,
       },
       PLAYER_RADIUS,
       BODY_OFFSET_Y * 2,
       city.colliders,
       CITY_LIMIT,
     );
-    desired.x = previous.x + collision.position.x - trackedHeadWorld.x;
+    desired.x = previousX + collision.position.x - trackedHeadWorld.x;
     desired.y = collision.position.y;
-    desired.z = previous.z + collision.position.z - trackedHeadWorld.z;
-    if (collision.collidedX) result.state.velocity.x = 0;
-    if (collision.collidedZ) result.state.velocity.z = 0;
-    if (collision.collidedY) result.state.velocity.y = 0;
-    if (collision.landed) result.state.grounded = true;
-    motionState = result.state;
-    motionState.position = desired;
+    desired.z = previousZ + collision.position.z - trackedHeadWorld.z;
+    if (collision.collidedX) motionState.velocity.x = 0;
+    if (collision.collidedZ) motionState.velocity.z = 0;
+    if (collision.collidedY) motionState.velocity.y = 0;
+    motionState.grounded = resolveTraversalGrounded(wasGrounded, physicsSteps, collision.landed);
     player.position.set(desired.x, desired.y, desired.z);
-    result.tethers.forEach((tether, index) => attachedControllers[index]?.tether.setRopeLength(tether.length));
+    for (const controller of controllers) {
+      if (controller.rope?.active) controller.tether.setRopeLength(controller.rope.currentLength);
+    }
   }
 
   if (!wasGrounded && motionState.grounded) gameAudio.play('land');
@@ -349,11 +406,11 @@ renderer.xr.addEventListener('sessionstart', () => {
   document.body.classList.add('in-vr');
   void gameAudio.unlock();
   renderer.xr.setFoveation(0.65);
-  if (status) status.textContent = 'VR active — aim at a building and hold either rear grip';
+  if (status) status.textContent = 'VR active — aim at a building and hold either trigger';
 });
 renderer.xr.addEventListener('sessionend', () => {
   document.body.classList.remove('in-vr');
-  controllers.forEach(releaseControllerTether);
+  controllers.forEach((controller) => releaseControllerTether(controller, true));
   gameAudio.setSwingSpeed(0);
   if (status) status.textContent = 'VR session ended — ready to re-enter';
 });

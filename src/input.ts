@@ -13,6 +13,14 @@ export interface StickAxes {
   y: number;
 }
 
+export type RopeButtonAction = 'idle' | 'fire' | 'hold' | 'release';
+
+export function ropeButtonAction(wasHeld: boolean, pressure: number): RopeButtonAction {
+  if (!wasHeld && pressure >= 0.55) return 'fire';
+  if (wasHeld && pressure <= 0.3) return 'release';
+  return wasHeld ? 'hold' : 'idle';
+}
+
 export function readThumbstick(gamepad: GamepadLike): StickAxes {
   const axisOffset = gamepad.axes.length >= 4 ? 2 : 0;
   return {

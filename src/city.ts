@@ -43,6 +43,7 @@ interface RouteAgent {
 export interface CityRuntime {
   colliders: Collider2D[];
   swingTargets: THREE.Object3D[];
+  ropeRaycastTargets: THREE.Object3D[];
   update: (deltaSeconds: number, playerPosition: THREE.Vector3) => void;
   counts: {
     buildings: number;
@@ -361,6 +362,8 @@ function addBuildings(
     wrapper.add(model);
     wrapper.position.set(placement.x, 0.18, placement.z);
     wrapper.rotation.y = placement.rotation;
+    wrapper.userData.swingable = true;
+    wrapper.userData.swingObjectId = `building-${placement.family}-${placement.model}-${placement.x}-${placement.z}`;
     scene.add(wrapper);
     swingTargets.push(wrapper);
     wrapper.updateMatrixWorld(true);
@@ -516,6 +519,7 @@ export async function createCityWorld(
   scene: THREE.Scene,
   onProgress?: (message: string) => void,
 ): Promise<CityRuntime> {
+  const firstCitySceneChild = scene.children.length;
   const colliders: Collider2D[] = [];
   const swingTargets: THREE.Object3D[] = [];
   addGroundAndRoads(scene);
@@ -551,6 +555,7 @@ export async function createCityWorld(
   return {
     colliders,
     swingTargets,
+    ropeRaycastTargets: scene.children.slice(firstCitySceneChild),
     update,
     counts: {
       buildings: placements.length,
