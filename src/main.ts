@@ -4,12 +4,31 @@ import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { GameAudio } from './audio';
 import { CITY_LIMIT, CITY_SPAWN, createCityWorld, type CityRuntime } from './city';
 import { createControllerHand, visualHandednessForController, type ControllerHand } from './hands';
+import {
+  createControllerMotionState,
+  createPullGestureState,
+  ignorePullGestureSample,
+  sampleControllerLocalMotion,
+  updatePullGesture,
+  worldToPlayerLocalPosition,
+  type ControllerMotionSampleResult,
+  type ControllerMotionState,
+  type PullGestureResult,
+  type PullGestureState,
+} from './hand-pull';
 import { getHandPose, isJumpPressed, readThumbstick, ropeButtonAction, type GamepadLike, type RopeButtonAction } from './input';
 import { applyDeadzone, moveFromViewDirection } from './locomotion';
 import { shouldUseGroundLocomotion } from './swing';
 import { resolveTraversalGrounded, stepTraversalPhysics, type TraversalPhysicsState } from './rope-physics';
 import { traversalConfig } from './traversal-config';
-import { attachRope, beginRopeFlight, createRopeState, releaseRope } from './traversal-controller';
+import {
+  attachRope,
+  beginRopeFlight,
+  createRopeState,
+  discardSlackPullImpulse,
+  queueRopePull,
+  releaseRope,
+} from './traversal-controller';
 import type { RopeState } from './traversal-types';
 import { VisualTether } from './tether';
 import { moveBodyWithCollisionsSubstepped, moveRigWithTrackedCollision } from './world';
@@ -120,6 +139,11 @@ interface ControllerState {
   buttonHeld: boolean;
   pendingActions: RopeButtonAction[];
   worldHandPosition: THREE.Vector3;
+  localHandPosition: THREE.Vector3;
+  controllerMotion: ControllerMotionState;
+  controllerMotionResult: ControllerMotionSampleResult;
+  pullGesture: PullGestureState;
+  pullGestureResult: PullGestureResult;
 }
 
 const ropeStates: Record<'left' | 'right', RopeState> = {
@@ -133,7 +157,15 @@ function releaseControllerTether(state: ControllerState, clearPending = false): 
   const ropeReleased = state.rope ? releaseRope(state.rope) : false;
   if (visualReleased || ropeReleased) gameAudio.play('release');
   state.buttonHeld = false;
-  if (clearPending) state.pendingActions.length = 0;
+  state.pullGesture.phase = 'idle';
+  state.pullGesture.accumulatedPullDistance = 0;
+  state.pullGesture.accumulatedImpulse = 0;
+  state.pullGesture.pendingShortenDistance = 0;
+  state.pullGesture.recoveryDistance = 0;
+  if (clearPending) {
+    state.pendingActions.length = 0;
+    state.controllerMotion.initialized = false;
+  }
 }
 
 function createController(index: number): ControllerState {
@@ -146,6 +178,21 @@ function createController(index: number): ControllerState {
     buttonHeld: false,
     pendingActions: [],
     worldHandPosition: new THREE.Vector3(),
+    localHandPosition: new THREE.Vector3(),
+    controllerMotion: createControllerMotionState(),
+    controllerMotionResult: {
+      velocity: { x: 0, y: 0, z: 0 },
+      speed: 0,
+      trackingSpikeRejected: false,
+    },
+    pullGesture: createPullGestureState(),
+    pullGestureResult: {
+      inwardSpeed: 0,
+      acceptedPullDistance: 0,
+      impulseMagnitude: 0,
+      pullStarted: false,
+      phaseChanged: false,
+    },
   };
 
   targetRay.addEventListener('connected', (event) => {
@@ -192,6 +239,7 @@ let motionState: TraversalPhysicsState = {
 };
 const viewForward = new THREE.Vector3();
 const trackedHeadWorld = new THREE.Vector3();
+const chestLocalPosition = new THREE.Vector3();
 const leftRopeOffset = new THREE.Vector3(0, BODY_OFFSET_Y, 0);
 const rightRopeOffset = new THREE.Vector3(0, BODY_OFFSET_Y, 0);
 const aimDirection = new THREE.Vector3();
@@ -251,6 +299,13 @@ function updatePlayer(deltaSeconds: number): void {
   if (viewForward.lengthSq() < 1e-6) viewForward.set(0, 0, -1);
   viewForward.normalize();
 
+  worldToPlayerLocalPosition(
+    trackedHeadWorld,
+    player.position,
+    player.rotation.y,
+    chestLocalPosition,
+  );
+  chestLocalPosition.y -= 0.25;
   leftRopeOffset.set(0, BODY_OFFSET_Y, 0);
   rightRopeOffset.set(0, BODY_OFFSET_Y, 0);
   for (const controller of controllers) {
@@ -285,6 +340,82 @@ function updatePlayer(deltaSeconds: number): void {
         controller.worldHandPosition.z - player.position.z,
       );
     }
+
+    worldToPlayerLocalPosition(
+      controller.worldHandPosition,
+      player.position,
+      player.rotation.y,
+      controller.localHandPosition,
+    );
+    sampleControllerLocalMotion(
+      controller.controllerMotion,
+      controller.localHandPosition,
+      deltaSeconds,
+      {
+        smoothingRate: traversalConfig.pull.controllerVelocitySmoothing,
+        maximumTrackedSpeed: traversalConfig.pull.maximumTrackedSpeed,
+      },
+      controller.controllerMotionResult,
+    );
+    const rope = controller.rope;
+    const anchor = rope?.anchorPoint;
+    const ropeNearTaut = Boolean(
+      rope?.active
+      && anchor
+      && Math.hypot(
+        anchor.x - controller.worldHandPosition.x,
+        anchor.y - controller.worldHandPosition.y,
+        anchor.z - controller.worldHandPosition.z,
+      ) >= rope.currentLength - traversalConfig.rope.slackTolerance,
+    );
+    if (rope) discardSlackPullImpulse(rope, ropeNearTaut);
+    if (controller.controllerMotionResult.trackingSpikeRejected) {
+      ignorePullGestureSample(controller.pullGesture, controller.pullGestureResult);
+    } else {
+      updatePullGesture(
+        controller.pullGesture,
+        {
+          ropeActive: Boolean(rope?.active),
+          ropeNearTaut,
+          controllerPosition: controller.localHandPosition,
+          controllerVelocity: controller.controllerMotionResult.velocity,
+          chestPosition: chestLocalPosition,
+          deltaSeconds,
+        },
+        {
+          deadZoneSpeed: traversalConfig.pull.deadZoneSpeed,
+          activationSpeed: traversalConfig.pull.activationSpeed,
+          minimumArmExtension: traversalConfig.pull.minimumArmExtension,
+          recoveryDistance: traversalConfig.pull.recoveryDistance,
+          maximumPendingDistance: traversalConfig.pull.maximumPendingDistance,
+          maximumTrackedSpeed: traversalConfig.pull.maximumTrackedSpeed,
+          baseForce: traversalConfig.pull.baseForce,
+          additionalForce: traversalConfig.pull.additionalForce,
+          maxImpulsePerPull: traversalConfig.pull.maxImpulsePerPull,
+        },
+        controller.pullGestureResult,
+      );
+    }
+    if (rope) {
+      rope.previousControllerPosition.x = controller.localHandPosition.x;
+      rope.previousControllerPosition.y = controller.localHandPosition.y;
+      rope.previousControllerPosition.z = controller.localHandPosition.z;
+      rope.filteredControllerVelocity.x = controller.controllerMotionResult.velocity.x;
+      rope.filteredControllerVelocity.y = controller.controllerMotionResult.velocity.y;
+      rope.filteredControllerVelocity.z = controller.controllerMotionResult.velocity.z;
+      rope.accumulatedPullDistance = controller.pullGesture.accumulatedPullDistance;
+      rope.pullPhase = controller.pullGesture.phase;
+      queueRopePull(
+        rope,
+        controller.pullGestureResult.acceptedPullDistance,
+        controller.pullGestureResult.impulseMagnitude,
+        traversalConfig.rope.reelSensitivity,
+        traversalConfig.pull.maximumPendingDistance,
+        traversalConfig.pull.maxImpulsePerPull,
+      );
+      if (controller.pullGestureResult.pullStarted) rope.lastFullPullAtTime = performance.now();
+    }
+
     const tetherEvent = controller.tether.update(deltaSeconds, controller.worldHandPosition);
     if (tetherEvent === 'attached' && controller.rope) {
       const attachment = controller.tether.getAttachment();

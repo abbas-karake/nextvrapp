@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attachRope, beginRopeFlight, createRopeState, releaseRope } from '../src/traversal-controller';
+import { attachRope, beginRopeFlight, createRopeState, queueRopePull, releaseRope } from '../src/traversal-controller';
 
 describe('independent rope lifecycle', () => {
   it('enters a non-active flying state before a projectile reaches its target', () => {
@@ -9,6 +9,24 @@ describe('independent rope lifecycle', () => {
     expect(left.active).toBe(false);
     expect(releaseRope(left)).toBe(true);
     expect(left.lifecycle).toBe('idle');
+  });
+
+  it('queues bounded pull distance and impulse only for an active rope', () => {
+    const left = createRopeState('left', 1.5, 80);
+    queueRopePull(left, 0.02, 3, 1, 0.65, 7.5);
+    expect(left.pendingShortenDistance).toBe(0);
+    expect(left.pendingPullImpulse).toBe(0);
+    attachRope(
+      left,
+      { point: { x: 0, y: 8, z: 0 }, normal: { x: 0, y: -1, z: 0 }, objectId: 'roof' },
+      { x: 0, y: 2, z: 0 },
+      0,
+      0,
+    );
+    queueRopePull(left, 0.02, 3, 1, 0.65, 7.5);
+    queueRopePull(left, 1, 10, 1, 0.65, 7.5);
+    expect(left.pendingShortenDistance).toBe(0.65);
+    expect(left.pendingPullImpulse).toBe(7.5);
   });
 
   it('attaches only the requested hand at the exact hit point', () => {

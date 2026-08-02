@@ -115,9 +115,20 @@ export function stepTraversalPhysics(
     let accelerationX = input.x * config.airControl.acceleration * airAuthority;
     let accelerationY = config.physics.gravity;
     let accelerationZ = input.z * config.airControl.acceleration * airAuthority;
+    let pullImpulseX = 0;
+    let pullImpulseY = 0;
+    let pullImpulseZ = 0;
 
     for (const rope of ropes) {
       if (!rope.active || !rope.anchorPoint) continue;
+      const consumedPullDistance = Math.min(
+        rope.pendingShortenDistance,
+        config.pull.maximumPullRate * stepSeconds,
+        Math.max(0, rope.currentLength - rope.minimumLength),
+      );
+      rope.pendingShortenDistance -= consumedPullDistance;
+      rope.currentLength -= consumedPullDistance;
+      rope.targetLength = Math.max(rope.minimumLength, rope.targetLength - consumedPullDistance);
       const lengthDifference = rope.targetLength - rope.currentLength;
       const maximumLengthChange = config.rope.reelSensitivity * stepSeconds;
       rope.currentLength += Math.max(
@@ -130,6 +141,24 @@ export function stepTraversalPhysics(
       ropeOriginScratch.x = state.position.x + (ropeOffset?.x ?? 0);
       ropeOriginScratch.y = state.position.y + (ropeOffset?.y ?? 0);
       ropeOriginScratch.z = state.position.z + (ropeOffset?.z ?? 0);
+      const toAnchorX = rope.anchorPoint.x - ropeOriginScratch.x;
+      const toAnchorY = rope.anchorPoint.y - ropeOriginScratch.y;
+      const toAnchorZ = rope.anchorPoint.z - ropeOriginScratch.z;
+      const distanceToAnchor = Math.hypot(toAnchorX, toAnchorY, toAnchorZ);
+      const pendingPullImpulse = rope.pendingPullImpulse;
+      rope.pendingPullImpulse = 0;
+      if (
+        pendingPullImpulse > 0
+        && distanceToAnchor > 1e-8
+        && distanceToAnchor >= rope.currentLength - config.rope.slackTolerance
+      ) {
+        const impulseScale = pendingPullImpulse
+          * config.comfort.pullStrengthScale
+          / distanceToAnchor;
+        pullImpulseX += toAnchorX * impulseScale;
+        pullImpulseY += toAnchorY * impulseScale;
+        pullImpulseZ += toAnchorZ * impulseScale;
+      }
       solveRopeTension(
         {
           ropeOrigin: ropeOriginScratch,
@@ -150,6 +179,9 @@ export function stepTraversalPhysics(
       accelerationZ += ropeForceScratch.z / config.physics.playerMass;
     }
 
+    state.velocity.x += pullImpulseX / config.physics.playerMass;
+    state.velocity.y += pullImpulseY / config.physics.playerMass;
+    state.velocity.z += pullImpulseZ / config.physics.playerMass;
     state.velocity.x += accelerationX * stepSeconds;
     state.velocity.y += accelerationY * stepSeconds;
     state.velocity.z += accelerationZ * stepSeconds;

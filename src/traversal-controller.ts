@@ -25,6 +25,8 @@ export function createRopeState(
     previousControllerPosition: { x: 0, y: 0, z: 0 },
     filteredControllerVelocity: { x: 0, y: 0, z: 0 },
     accumulatedPullDistance: 0,
+    pendingShortenDistance: 0,
+    pendingPullImpulse: 0,
     pullPhase: 'idle',
     visualRope: null,
     attachedAtTime: 0,
@@ -59,8 +61,33 @@ export function attachRope(
   rope.currentLength = Math.max(rope.minimumLength, Math.min(preloadedLength, rope.maximumLength));
   rope.targetLength = rope.currentLength;
   rope.accumulatedPullDistance = 0;
+  rope.pendingShortenDistance = 0;
+  rope.pendingPullImpulse = 0;
   rope.pullPhase = 'idle';
   rope.attachedAtTime = attachedAtTime;
+}
+
+export function discardSlackPullImpulse(rope: RopeState, ropeNearTaut: boolean): void {
+  if (rope.active && !ropeNearTaut) rope.pendingPullImpulse = 0;
+}
+
+export function queueRopePull(
+  rope: RopeState,
+  acceptedPullDistance: number,
+  impulseMagnitude: number,
+  reelSensitivity: number,
+  maximumPendingDistance: number,
+  maximumImpulse: number,
+): void {
+  if (!rope.active) return;
+  rope.pendingShortenDistance = Math.min(
+    maximumPendingDistance,
+    rope.pendingShortenDistance + Math.max(0, acceptedPullDistance) * reelSensitivity,
+  );
+  rope.pendingPullImpulse = Math.min(
+    maximumImpulse,
+    rope.pendingPullImpulse + Math.max(0, impulseMagnitude),
+  );
 }
 
 export function releaseRope(rope: RopeState): boolean {
@@ -72,6 +99,8 @@ export function releaseRope(rope: RopeState): boolean {
   rope.anchorObjectId = null;
   rope.anchorLocalPoint = null;
   rope.accumulatedPullDistance = 0;
+  rope.pendingShortenDistance = 0;
+  rope.pendingPullImpulse = 0;
   rope.pullPhase = 'idle';
   return true;
 }

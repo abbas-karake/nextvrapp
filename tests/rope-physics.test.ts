@@ -222,6 +222,92 @@ describe('tension-only rope physics', () => {
     expect(rope.targetLength).toBe(preloadedLength);
   });
 
+  it('consumes a sampled pull-distance budget only once across catch-up steps', () => {
+    const rope = createRopeState('left', 1.5, 80);
+    attachRope(
+      rope,
+      { point: { x: 0, y: 10, z: 0 }, normal: { x: 0, y: -1, z: 0 }, objectId: 'roof' },
+      { x: 0, y: 0, z: 0 },
+      0,
+      0,
+    );
+    rope.pendingShortenDistance = 0.02;
+    const state = {
+      position: { x: 0, y: 0, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      grounded: false,
+      physicsRemainder: 0,
+    };
+    const steps = stepTraversalPhysics(
+      state,
+      [rope],
+      { x: 0, z: 0 },
+      3 / 72,
+      { ...traversalConfig, physics: { ...traversalConfig.physics, gravity: 0 } },
+    );
+    expect(steps).toBe(3);
+    expect(rope.currentLength).toBeCloseTo(9.98, 10);
+    expect(rope.targetLength).toBeCloseTo(9.98, 10);
+    expect(rope.pendingShortenDistance).toBe(0);
+  });
+
+  it('consumes a pull impulse once toward the anchor without replacing tangent speed', () => {
+    const rope = createRopeState('left', 1.5, 80);
+    attachRope(
+      rope,
+      { point: { x: 0, y: 10, z: 0 }, normal: { x: 0, y: -1, z: 0 }, objectId: 'roof' },
+      { x: 0, y: 0, z: 0 },
+      0,
+      0,
+    );
+    rope.pendingPullImpulse = 3;
+    const state = {
+      position: { x: 0, y: 0, z: 0 },
+      velocity: { x: 5, y: 0, z: 0 },
+      grounded: false,
+      physicsRemainder: 0,
+    };
+    stepTraversalPhysics(
+      state,
+      [rope],
+      { x: 0, z: 0 },
+      1 / 72,
+      { ...traversalConfig, physics: { ...traversalConfig.physics, gravity: 0 } },
+    );
+    expect(state.velocity.x).toBeCloseTo(5, 10);
+    expect(state.velocity.y).toBeGreaterThanOrEqual(3);
+    expect(rope.pendingPullImpulse).toBe(0);
+  });
+
+  it('does not apply a queued pull impulse after the rope goes slack', () => {
+    const rope = createRopeState('left', 1.5, 80);
+    attachRope(
+      rope,
+      { point: { x: 0, y: 5, z: 0 }, normal: { x: 0, y: -1, z: 0 }, objectId: 'roof' },
+      { x: 0, y: 0, z: 0 },
+      0,
+      0,
+    );
+    rope.currentLength = 8;
+    rope.targetLength = 8;
+    rope.pendingPullImpulse = 3;
+    const state = {
+      position: { x: 0, y: 0, z: 0 },
+      velocity: { x: 5, y: 0, z: 0 },
+      grounded: false,
+      physicsRemainder: 0,
+    };
+    stepTraversalPhysics(
+      state,
+      [rope],
+      { x: 0, z: 0 },
+      1 / 72,
+      { ...traversalConfig, physics: { ...traversalConfig.physics, gravity: 0 } },
+    );
+    expect(state.velocity).toEqual({ x: 5, y: 0, z: 0 });
+    expect(rope.pendingPullImpulse).toBe(0);
+  });
+
   it('fades aerial control to zero at its maximum influence speed', () => {
     const state = {
       position: { x: 0, y: 10, z: 0 },
