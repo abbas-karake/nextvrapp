@@ -21,6 +21,7 @@ export interface RopeState {
   accumulatedPullDistance: number;
   pendingShortenDistance: number;
   pendingPullImpulse: number;
+  pendingPullDirection: Vector3Value;
   pullPhase: PullGesturePhase;
   visualRope: unknown | null;
   attachedAtTime: number;

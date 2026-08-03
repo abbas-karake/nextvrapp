@@ -141,41 +141,27 @@ export function stepTraversalPhysics(
       ropeOriginScratch.x = state.position.x + (ropeOffset?.x ?? 0);
       ropeOriginScratch.y = state.position.y + (ropeOffset?.y ?? 0);
       ropeOriginScratch.z = state.position.z + (ropeOffset?.z ?? 0);
-      const toAnchorX = rope.anchorPoint.x - ropeOriginScratch.x;
-      const toAnchorY = rope.anchorPoint.y - ropeOriginScratch.y;
-      const toAnchorZ = rope.anchorPoint.z - ropeOriginScratch.z;
-      const distanceToAnchor = Math.hypot(toAnchorX, toAnchorY, toAnchorZ);
+
       const pendingPullImpulse = rope.pendingPullImpulse;
+      const pendingDirectionX = rope.pendingPullDirection.x;
+      const pendingDirectionY = rope.pendingPullDirection.y;
+      const pendingDirectionZ = rope.pendingPullDirection.z;
       rope.pendingPullImpulse = 0;
-      if (pendingPullImpulse > 0 && distanceToAnchor > 1e-8) {
-        let directionX = toAnchorX / distanceToAnchor;
-        let directionY = toAnchorY / distanceToAnchor;
-        let directionZ = toAnchorZ / distanceToAnchor;
-        const minimumUpwardDirection = Math.max(
-          0,
-          Math.min(config.pull.minimumUpwardDirection, 1),
-        );
-        if (state.grounded && directionY < minimumUpwardDirection) {
-          const horizontalLength = Math.hypot(directionX, directionZ);
-          if (horizontalLength > 1e-8) {
-            const horizontalScale = Math.sqrt(1 - minimumUpwardDirection ** 2)
-              / horizontalLength;
-            directionX *= horizontalScale;
-            directionZ *= horizontalScale;
-            directionY = minimumUpwardDirection;
-          } else {
-            directionX = 0;
-            directionY = 1;
-            directionZ = 0;
-          }
-        }
-        const assistedDirectionLength = Math.hypot(directionX, directionY, directionZ);
+      rope.pendingPullDirection.x = 0;
+      rope.pendingPullDirection.y = 0;
+      rope.pendingPullDirection.z = 0;
+      const pendingDirectionLength = Math.hypot(
+        pendingDirectionX,
+        pendingDirectionY,
+        pendingDirectionZ,
+      );
+      if (pendingPullImpulse > 0 && pendingDirectionLength > 1e-8) {
         const impulseScale = pendingPullImpulse
           * config.comfort.pullStrengthScale
-          / assistedDirectionLength;
-        pullImpulseX += directionX * impulseScale;
-        pullImpulseY += directionY * impulseScale;
-        pullImpulseZ += directionZ * impulseScale;
+          / pendingDirectionLength;
+        pullImpulseX += pendingDirectionX * impulseScale;
+        pullImpulseY += pendingDirectionY * impulseScale;
+        pullImpulseZ += pendingDirectionZ * impulseScale;
       }
       solveRopeTension(
         {

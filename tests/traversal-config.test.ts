@@ -17,7 +17,6 @@ describe('traversal tuning configuration', () => {
     expect(traversalConfig.pull.maximumPendingDistance).toBe(0.65);
     expect(traversalConfig.pull.maximumPullRate).toBe(2);
     expect(traversalConfig.pull.minimumLaunchImpulse).toBe(6);
-    expect(traversalConfig.pull.minimumUpwardDirection).toBe(0.4);
     expect(traversalConfig.pull.maxImpulsePerPull).toBe(12);
     expect(traversalConfig.dualPull.maximumMultiplier).toBe(1.25);
     expect(traversalConfig.swing.maximumAssistedSpeed).toBe(28);

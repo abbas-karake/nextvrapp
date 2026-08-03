@@ -16,9 +16,10 @@ function motionResult(): ControllerMotionSampleResult {
 
 function pullResult(): PullGestureResult {
   return {
-    inwardSpeed: 0,
+    movementSpeed: 0,
     acceptedPullDistance: 0,
     impulseMagnitude: 0,
+    impulseDirection: { x: 0, y: 0, z: 0 },
     pullStarted: false,
     phaseChanged: false,
   };
@@ -316,9 +317,10 @@ describe('player-local physical hand sampling', () => {
     expect(state.phase).toBe('pulling');
     expect(state.accumulatedImpulse).toBe(impulseBeforeSpike);
     expect(output).toEqual({
-      inwardSpeed: 0,
+      movementSpeed: 0,
       acceptedPullDistance: 0,
       impulseMagnitude: 0,
+      impulseDirection: { x: 0, y: 0, z: 0 },
       pullStarted: false,
       phaseChanged: false,
     });
@@ -330,6 +332,7 @@ describe('player-local physical hand sampling', () => {
       const output = pullResult();
       const chest = { x: 0, y: 1.2, z: 0 };
       state.phase = 'recovery';
+      state.strokeDirection.x = -1;
       for (let cycle = 0; cycle < 10; cycle += 1) {
         for (const velocity of [firstVelocity, secondVelocity]) {
           updatePullGesture(state, {
@@ -352,10 +355,11 @@ describe('player-local physical hand sampling', () => {
     expect(inwardFirst.recoveryDistance).toBeCloseTo(0, 10);
   });
 
-  it('returns recovery to idle when the hand is below minimum extension', () => {
+  it('returns recovery to armed even when the hand is close to the body', () => {
     const state = createPullGestureState();
     const output = pullResult();
     state.phase = 'recovery';
+    state.strokeDirection.x = -1;
     updatePullGesture(state, {
       ropeActive: true,
       ropeNearTaut: true,
@@ -364,7 +368,7 @@ describe('player-local physical hand sampling', () => {
       chestPosition: { x: 0, y: 1.2, z: 0 },
       deltaSeconds: 0.1,
     }, pullTuning, output);
-    expect(state.phase).toBe('idle');
+    expect(state.phase).toBe('armed');
   });
 
   it('freezes a stroke through the actual tracking-spike rejection path', () => {
@@ -396,37 +400,19 @@ describe('player-local physical hand sampling', () => {
     expect(pullOutput.acceptedPullDistance).toBe(0);
   });
 
-  it('disarms when the hand falls below minimum extension before pulling', () => {
+  it('allows an intentional directional pull close to the body', () => {
     const state = createPullGestureState();
     const output = pullResult();
-    const chest = { x: 0, y: 1.2, z: 0 };
     updatePullGesture(state, {
       ropeActive: true,
-      ropeNearTaut: true,
-      controllerPosition: { x: 0.6, y: 1.2, z: 0 },
-      controllerVelocity: { x: 0, y: 0, z: 0 },
-      chestPosition: chest,
+      ropeNearTaut: false,
+      controllerPosition: { x: 0.05, y: 1.2, z: 0 },
+      controllerVelocity: { x: 0, y: -1, z: 0 },
+      chestPosition: { x: 0, y: 1.2, z: 0 },
       deltaSeconds: 0.02,
     }, pullTuning, output);
-    expect(state.phase).toBe('armed');
-    updatePullGesture(state, {
-      ropeActive: true,
-      ropeNearTaut: true,
-      controllerPosition: { x: 0.15, y: 1.2, z: 0 },
-      controllerVelocity: { x: 0, y: 0, z: 0 },
-      chestPosition: chest,
-      deltaSeconds: 0.02,
-    }, pullTuning, output);
-    expect(state.phase).toBe('idle');
-    updatePullGesture(state, {
-      ropeActive: true,
-      ropeNearTaut: true,
-      controllerPosition: { x: 0.14, y: 1.2, z: 0 },
-      controllerVelocity: { x: -1, y: 0, z: 0 },
-      chestPosition: chest,
-      deltaSeconds: 0.02,
-    }, pullTuning, output);
-    expect(state.phase).toBe('idle');
-    expect(output.pullStarted).toBe(false);
+    expect(state.phase).toBe('pulling');
+    expect(output.pullStarted).toBe(true);
+    expect(output.impulseDirection).toEqual({ x: -0, y: 1, z: -0 });
   });
 });

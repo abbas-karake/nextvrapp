@@ -16,6 +16,19 @@ export function worldToPlayerLocalPosition(
   return output;
 }
 
+export function playerLocalToWorldDirection(
+  localDirection: Vector3Value,
+  playerYaw: number,
+  output: Vector3Value,
+): Vector3Value {
+  const cosine = Math.cos(playerYaw);
+  const sine = Math.sin(playerYaw);
+  output.x = localDirection.x * cosine + localDirection.z * sine;
+  output.y = localDirection.y;
+  output.z = -localDirection.x * sine + localDirection.z * cosine;
+  return output;
+}
+
 export interface ControllerMotionState {
   initialized: boolean;
   previousPosition: Vector3Value;
@@ -105,6 +118,7 @@ export interface PullGestureState {
   accumulatedImpulse: number;
   pendingShortenDistance: number;
   recoveryDistance: number;
+  strokeDirection: Vector3Value;
 }
 
 export interface PullGestureInput {
@@ -130,22 +144,41 @@ export interface PullGestureTuning {
 }
 
 export interface PullGestureResult {
-  inwardSpeed: number;
+  movementSpeed: number;
   acceptedPullDistance: number;
   impulseMagnitude: number;
+  impulseDirection: Vector3Value;
   pullStarted: boolean;
   phaseChanged: boolean;
+}
+
+function clearPullOutput(output: PullGestureResult): void {
+  output.movementSpeed = 0;
+  output.acceptedPullDistance = 0;
+  output.impulseMagnitude = 0;
+  output.impulseDirection.x = 0;
+  output.impulseDirection.y = 0;
+  output.impulseDirection.z = 0;
+  output.pullStarted = false;
+  output.phaseChanged = false;
+}
+
+function resetPullState(state: PullGestureState): void {
+  state.phase = 'idle';
+  state.accumulatedPullDistance = 0;
+  state.accumulatedImpulse = 0;
+  state.pendingShortenDistance = 0;
+  state.recoveryDistance = 0;
+  state.strokeDirection.x = 0;
+  state.strokeDirection.y = 0;
+  state.strokeDirection.z = 0;
 }
 
 export function ignorePullGestureSample(
   _state: PullGestureState,
   output: PullGestureResult,
 ): PullGestureResult {
-  output.inwardSpeed = 0;
-  output.acceptedPullDistance = 0;
-  output.impulseMagnitude = 0;
-  output.pullStarted = false;
-  output.phaseChanged = false;
+  clearPullOutput(output);
   return output;
 }
 
@@ -156,6 +189,7 @@ export function createPullGestureState(): PullGestureState {
     accumulatedImpulse: 0,
     pendingShortenDistance: 0,
     recoveryDistance: 0,
+    strokeDirection: { x: 0, y: 0, z: 0 },
   };
 }
 
@@ -165,82 +199,69 @@ export function updatePullGesture(
   tuning: PullGestureTuning,
   output: PullGestureResult,
 ): PullGestureResult {
-  output.inwardSpeed = 0;
-  output.acceptedPullDistance = 0;
-  output.impulseMagnitude = 0;
-  output.pullStarted = false;
-  output.phaseChanged = false;
+  clearPullOutput(output);
 
   if (!input.ropeActive) {
     output.phaseChanged = state.phase !== 'idle';
-    state.phase = 'idle';
-    state.accumulatedPullDistance = 0;
-    state.accumulatedImpulse = 0;
-    state.pendingShortenDistance = 0;
-    state.recoveryDistance = 0;
+    resetPullState(state);
     return output;
   }
 
-  const toChestX = input.chestPosition.x - input.controllerPosition.x;
-  const toChestY = input.chestPosition.y - input.controllerPosition.y;
-  const toChestZ = input.chestPosition.z - input.controllerPosition.z;
-  const extension = Math.hypot(toChestX, toChestY, toChestZ);
-  if (extension > 1e-8) {
-    output.inwardSpeed = (
-      input.controllerVelocity.x * toChestX
-      + input.controllerVelocity.y * toChestY
-      + input.controllerVelocity.z * toChestZ
-    ) / extension;
-  }
+  const velocityX = input.controllerVelocity.x;
+  const velocityY = input.controllerVelocity.y;
+  const velocityZ = input.controllerVelocity.z;
+  output.movementSpeed = Math.hypot(velocityX, velocityY, velocityZ);
 
   if (state.phase === 'idle') {
-    if (extension < tuning.minimumArmExtension) return output;
     state.phase = 'armed';
     output.phaseChanged = true;
   }
 
-  if (state.phase === 'armed' && extension < tuning.minimumArmExtension) {
-    state.phase = 'idle';
-    state.accumulatedPullDistance = 0;
-    state.accumulatedImpulse = 0;
-    state.pendingShortenDistance = 0;
-    state.recoveryDistance = 0;
-    output.phaseChanged = true;
-    return output;
+  const deltaSeconds = Math.max(0, Math.min(input.deltaSeconds, 0.1));
+  if (state.phase === 'pulling') {
+    const movementAlongStroke = (
+      velocityX * state.strokeDirection.x
+      + velocityY * state.strokeDirection.y
+      + velocityZ * state.strokeDirection.z
+    );
+    if (output.movementSpeed <= tuning.deadZoneSpeed || movementAlongStroke <= tuning.deadZoneSpeed) {
+      state.phase = 'recovery';
+      state.recoveryDistance = 0;
+      output.phaseChanged = true;
+    }
   }
 
-  const deltaSeconds = Math.max(0, Math.min(input.deltaSeconds, 0.1));
   if (state.phase === 'recovery') {
-    const signedOutwardSpeed = -output.inwardSpeed;
-    const recoverySpeed = signedOutwardSpeed > tuning.deadZoneSpeed
-      ? signedOutwardSpeed - tuning.deadZoneSpeed
-      : signedOutwardSpeed < -tuning.deadZoneSpeed
-        ? signedOutwardSpeed + tuning.deadZoneSpeed
+    const signedReturnSpeed = -(
+      velocityX * state.strokeDirection.x
+      + velocityY * state.strokeDirection.y
+      + velocityZ * state.strokeDirection.z
+    );
+    const recoverySpeed = signedReturnSpeed > tuning.deadZoneSpeed
+      ? signedReturnSpeed - tuning.deadZoneSpeed
+      : signedReturnSpeed < -tuning.deadZoneSpeed
+        ? signedReturnSpeed + tuning.deadZoneSpeed
         : 0;
     state.recoveryDistance += recoverySpeed * deltaSeconds;
     if (state.recoveryDistance >= tuning.recoveryDistance) {
-      state.phase = extension >= tuning.minimumArmExtension ? 'armed' : 'idle';
+      state.phase = 'armed';
       state.recoveryDistance = 0;
       state.accumulatedPullDistance = 0;
       state.accumulatedImpulse = 0;
+      state.strokeDirection.x = 0;
+      state.strokeDirection.y = 0;
+      state.strokeDirection.z = 0;
       output.phaseChanged = true;
     }
     return output;
   }
 
-  if (state.phase === 'pulling' && output.inwardSpeed <= tuning.deadZoneSpeed) {
-    state.phase = 'recovery';
-    state.recoveryDistance = 0;
-    output.phaseChanged = true;
-    return output;
-  }
-
   if (
     state.phase === 'armed'
-    && output.inwardSpeed > tuning.deadZoneSpeed
-    && output.inwardSpeed <= tuning.activationSpeed
+    && output.movementSpeed > tuning.deadZoneSpeed
+    && output.movementSpeed <= tuning.activationSpeed
   ) {
-    output.acceptedPullDistance = (output.inwardSpeed - tuning.deadZoneSpeed) * deltaSeconds;
+    output.acceptedPullDistance = (output.movementSpeed - tuning.deadZoneSpeed) * deltaSeconds;
     state.accumulatedPullDistance += output.acceptedPullDistance;
     state.pendingShortenDistance = Math.min(
       tuning.maximumPendingDistance,
@@ -249,23 +270,30 @@ export function updatePullGesture(
     return output;
   }
 
-  if (state.phase === 'armed' && output.inwardSpeed > tuning.activationSpeed) {
+  if (state.phase === 'armed' && output.movementSpeed > tuning.activationSpeed) {
     state.phase = 'pulling';
+    state.strokeDirection.x = velocityX / output.movementSpeed;
+    state.strokeDirection.y = velocityY / output.movementSpeed;
+    state.strokeDirection.z = velocityZ / output.movementSpeed;
     output.pullStarted = true;
     output.phaseChanged = true;
   }
 
   if (state.phase === 'pulling') {
-    output.acceptedPullDistance = Math.max(0, output.inwardSpeed - tuning.deadZoneSpeed) * deltaSeconds;
+    output.acceptedPullDistance = Math.max(0, output.movementSpeed - tuning.deadZoneSpeed)
+      * deltaSeconds;
     state.accumulatedPullDistance += output.acceptedPullDistance;
     state.pendingShortenDistance = Math.min(
       tuning.maximumPendingDistance,
       state.pendingShortenDistance + output.acceptedPullDistance,
     );
+    output.impulseDirection.x = -velocityX / output.movementSpeed;
+    output.impulseDirection.y = -velocityY / output.movementSpeed;
+    output.impulseDirection.z = -velocityZ / output.movementSpeed;
     const pullRange = Math.max(tuning.maximumTrackedSpeed - tuning.activationSpeed, 1e-6);
     const normalizedPull = Math.max(
       0,
-      Math.min((output.inwardSpeed - tuning.activationSpeed) / pullRange, 1),
+      Math.min((output.movementSpeed - tuning.activationSpeed) / pullRange, 1),
     );
     const pullForce = tuning.baseForce + normalizedPull * tuning.additionalForce;
     const requestedImpulse = (

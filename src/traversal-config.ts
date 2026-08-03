@@ -29,7 +29,6 @@ export interface TraversalConfig {
     baseForce: number;
     additionalForce: number;
     minimumLaunchImpulse: number;
-    minimumUpwardDirection: number;
     recoveryDistance: number;
     maxImpulsePerPull: number;
   };
@@ -106,7 +105,6 @@ export const traversalConfig: TraversalConfig = {
     baseForce: 120,
     additionalForce: 850,
     minimumLaunchImpulse: 6,
-    minimumUpwardDirection: 0.4,
     recoveryDistance: 0.12,
     maxImpulsePerPull: 12,
   },

@@ -8,6 +8,7 @@ import {
   createControllerMotionState,
   createPullGestureState,
   ignorePullGestureSample,
+  playerLocalToWorldDirection,
   sampleControllerLocalMotion,
   updatePullGesture,
   worldToPlayerLocalPosition,
@@ -51,10 +52,10 @@ root.innerHTML = `
     <div class="controls">
       <div><span>MOVE</span> Left stick · Right stick turn</div>
       <div><span>POWER JUMP</span> A/X or press either stick</div>
-      <div><span>TETHER</span> Hold either trigger · release to fly</div>
+      <div><span>TETHER</span> Hold either trigger · move hand to launch opposite</div>
       <div><span>DESKTOP</span> WASD · mouse · Space</div>
     </div>
-    <p class="hint">Aim a hand at a building, hold its trigger, pull and swing, then release with your momentum.</p>
+    <p class="hint">Attach to a building, then move either hand—your body launches in the exact opposite direction.</p>
   </div>
   <div id="crosshair" aria-hidden="true"></div>
 `;
@@ -140,6 +141,7 @@ interface ControllerState {
   pendingActions: RopeButtonAction[];
   worldHandPosition: THREE.Vector3;
   localHandPosition: THREE.Vector3;
+  worldPullDirection: THREE.Vector3;
   controllerMotion: ControllerMotionState;
   controllerMotionResult: ControllerMotionSampleResult;
   pullGesture: PullGestureState;
@@ -152,19 +154,29 @@ const ropeStates: Record<'left' | 'right', RopeState> = {
 };
 const activeRopes = [ropeStates.left, ropeStates.right];
 
-function releaseControllerTether(state: ControllerState, clearPending = false): void {
-  const visualReleased = state.tether.release();
-  const ropeReleased = state.rope ? releaseRope(state.rope) : false;
-  if (visualReleased || ropeReleased) gameAudio.play('release');
-  state.buttonHeld = false;
+function resetControllerPullTracking(state: ControllerState): void {
   state.pullGesture.phase = 'idle';
   state.pullGesture.accumulatedPullDistance = 0;
   state.pullGesture.accumulatedImpulse = 0;
   state.pullGesture.pendingShortenDistance = 0;
   state.pullGesture.recoveryDistance = 0;
+  state.pullGesture.strokeDirection.x = 0;
+  state.pullGesture.strokeDirection.y = 0;
+  state.pullGesture.strokeDirection.z = 0;
+  state.controllerMotion.initialized = false;
+  state.controllerMotion.filteredVelocity.x = 0;
+  state.controllerMotion.filteredVelocity.y = 0;
+  state.controllerMotion.filteredVelocity.z = 0;
+}
+
+function releaseControllerTether(state: ControllerState, clearPending = false): void {
+  const visualReleased = state.tether.release();
+  const ropeReleased = state.rope ? releaseRope(state.rope) : false;
+  if (visualReleased || ropeReleased) gameAudio.play('release');
+  state.buttonHeld = false;
+  resetControllerPullTracking(state);
   if (clearPending) {
     state.pendingActions.length = 0;
-    state.controllerMotion.initialized = false;
   }
 }
 
@@ -179,6 +191,7 @@ function createController(index: number): ControllerState {
     pendingActions: [],
     worldHandPosition: new THREE.Vector3(),
     localHandPosition: new THREE.Vector3(),
+    worldPullDirection: new THREE.Vector3(),
     controllerMotion: createControllerMotionState(),
     controllerMotionResult: {
       velocity: { x: 0, y: 0, z: 0 },
@@ -187,9 +200,10 @@ function createController(index: number): ControllerState {
     },
     pullGesture: createPullGestureState(),
     pullGestureResult: {
-      inwardSpeed: 0,
+      movementSpeed: 0,
       acceptedPullDistance: 0,
       impulseMagnitude: 0,
+      impulseDirection: { x: 0, y: 0, z: 0 },
       pullStarted: false,
       phaseChanged: false,
     },
@@ -254,6 +268,7 @@ function getDesktopStick(): { x: number; y: number } {
 
 function beginControllerTether(state: ControllerState): void {
   if (!state.rope) return;
+  resetControllerPullTracking(state);
   state.targetRay.updateWorldMatrix(true, false);
   state.grip.updateWorldMatrix(true, false);
   state.grip.getWorldPosition(state.worldHandPosition);
@@ -397,10 +412,16 @@ function updatePlayer(deltaSeconds: number): void {
       rope.filteredControllerVelocity.z = controller.controllerMotionResult.velocity.z;
       rope.accumulatedPullDistance = controller.pullGesture.accumulatedPullDistance;
       rope.pullPhase = controller.pullGesture.phase;
+      playerLocalToWorldDirection(
+        controller.pullGestureResult.impulseDirection,
+        player.rotation.y,
+        controller.worldPullDirection,
+      );
       queueRopePull(
         rope,
         controller.pullGestureResult.acceptedPullDistance,
         controller.pullGestureResult.impulseMagnitude,
+        controller.worldPullDirection,
         traversalConfig.rope.reelSensitivity,
         traversalConfig.pull.maximumPendingDistance,
         traversalConfig.pull.maxImpulsePerPull,
@@ -419,15 +440,6 @@ function updatePlayer(deltaSeconds: number): void {
           performance.now(),
           traversalConfig.rope.attachmentPreload,
         );
-        queueRopePull(
-          controller.rope,
-          controller.pullGesture.pendingShortenDistance,
-          controller.pullGesture.accumulatedImpulse,
-          traversalConfig.rope.reelSensitivity,
-          traversalConfig.pull.maximumPendingDistance,
-          traversalConfig.pull.maxImpulsePerPull,
-        );
-        controller.pullGesture.pendingShortenDistance = 0;
         gameAudio.play('attach');
       }
     } else if (tetherEvent === 'missed' && controller.rope) {

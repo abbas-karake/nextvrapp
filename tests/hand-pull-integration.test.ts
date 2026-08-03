@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createControllerMotionState,
   createPullGestureState,
+  playerLocalToWorldDirection,
   sampleControllerLocalMotion,
   updatePullGesture,
   type ControllerMotionSampleResult,
@@ -19,7 +20,7 @@ import {
 } from '../src/traversal-controller';
 import { moveBodyWithCollisionsSubstepped } from '../src/world';
 
-function runPull(inwardSpeed: number): { upwardVelocity: number; ropeLength: number } {
+function runPull(movementSpeed: number): { launchVelocityX: number; ropeLength: number } {
   const rope = createRopeState('left', 1.5, 80);
   attachRope(
     rope,
@@ -30,9 +31,10 @@ function runPull(inwardSpeed: number): { upwardVelocity: number; ropeLength: num
   );
   const gesture = createPullGestureState();
   const result: PullGestureResult = {
-    inwardSpeed: 0,
-    acceptedPullDistance: 0,
-    impulseMagnitude: 0,
+    movementSpeed: 0,
+        acceptedPullDistance: 0,
+        impulseMagnitude: 0,
+        impulseDirection: { x: 0, y: 0, z: 0 },
     pullStarted: false,
     phaseChanged: false,
   };
@@ -61,7 +63,7 @@ function runPull(inwardSpeed: number): { upwardVelocity: number; ropeLength: num
     ropeActive: true,
     ropeNearTaut: true,
     controllerPosition: { x: 0.58, y: 1.2, z: 0 },
-    controllerVelocity: { x: -inwardSpeed, y: 0, z: 0 },
+    controllerVelocity: { x: -movementSpeed, y: 0, z: 0 },
     chestPosition: chest,
     deltaSeconds: 0.02,
   }, tuning, result);
@@ -69,6 +71,7 @@ function runPull(inwardSpeed: number): { upwardVelocity: number; ropeLength: num
     rope,
     result.acceptedPullDistance,
     result.impulseMagnitude,
+    result.impulseDirection,
     traversalConfig.rope.reelSensitivity,
     traversalConfig.pull.maximumPendingDistance,
     traversalConfig.pull.maxImpulsePerPull,
@@ -86,17 +89,17 @@ function runPull(inwardSpeed: number): { upwardVelocity: number; ropeLength: num
     1 / 72,
     { ...traversalConfig, physics: { ...traversalConfig.physics, gravity: 0 } },
   );
-  return { upwardVelocity: state.velocity.y, ropeLength: rope.currentLength };
+  return { launchVelocityX: state.velocity.x, ropeLength: rope.currentLength };
 }
 
 describe('physical hand pull integration', () => {
-  it('shortens the rope and gives fast pulls more anchorward acceleration', () => {
+  it('shortens the rope and gives faster motion a stronger opposite launch', () => {
     const slow = runPull(0.25);
     const fast = runPull(2);
     expect(slow.ropeLength).toBeLessThan(10);
     expect(fast.ropeLength).toBeLessThan(slow.ropeLength);
-    expect(slow.upwardVelocity).toBeGreaterThan(0);
-    expect(fast.upwardVelocity).toBeGreaterThan(slow.upwardVelocity);
+    expect(slow.launchVelocityX).toBeGreaterThan(4);
+    expect(fast.launchVelocityX).toBeGreaterThan(slow.launchVelocityX);
   });
 
   it('preserves an attached-rope launch across a zero-step slack interval', () => {
@@ -110,7 +113,7 @@ describe('physical hand pull integration', () => {
     );
     rope.currentLength = 12;
     rope.targetLength = 12;
-    queueRopePull(rope, 0, 3, 1, 0.65, 12);
+    queueRopePull(rope, 0, 3, { x: 0, y: 1, z: 0 }, 1, 0.65, 12);
     const state = {
       position: { x: 0, y: 0, z: 0 },
       velocity: { x: 4, y: 0, z: 0 },
@@ -148,7 +151,7 @@ describe('physical hand pull integration', () => {
     const released = releaseRope(rope);
     expect(released).toBe(true);
     expect(ropeAcceptsPullInput(rope)).toBe(false);
-    queueRopePull(rope, 0.4, 7.5, 1, 0.65, 7.5);
+    queueRopePull(rope, 0.4, 7.5, { x: 0, y: 1, z: 0 }, 1, 0.65, 7.5);
     expect(rope.pendingShortenDistance).toBe(0);
     expect(rope.pendingPullImpulse).toBe(0);
     const state = {
@@ -163,6 +166,7 @@ describe('physical hand pull integration', () => {
 
   it('buffers a pull made during projectile flight and applies it only after attachment', () => {
     const frameSeconds = 1 / 90;
+    const sampledYaw = Math.PI / 2;
     const chest = { x: 0, y: 1.35, z: 0 };
     const initialHand = { x: 0, y: 1.35, z: -0.32 };
     const rope = createRopeState('left', 1.5, 80);
@@ -175,12 +179,14 @@ describe('physical hand pull integration', () => {
       trackingSpikeRejected: false,
     };
     const pullOutput: PullGestureResult = {
-      inwardSpeed: 0,
-      acceptedPullDistance: 0,
-      impulseMagnitude: 0,
+      movementSpeed: 0,
+          acceptedPullDistance: 0,
+          impulseMagnitude: 0,
+          impulseDirection: { x: 0, y: 0, z: 0 },
       pullStarted: false,
       phaseChanged: false,
     };
+    const worldPullDirection = { x: 0, y: 0, z: 0 };
     sampleControllerLocalMotion(
       motion,
       initialHand,
@@ -227,11 +233,51 @@ describe('physical hand pull integration', () => {
         minimumLaunchImpulse: traversalConfig.pull.minimumLaunchImpulse,
         maxImpulsePerPull: traversalConfig.pull.maxImpulsePerPull,
       }, pullOutput);
+      playerLocalToWorldDirection(
+        pullOutput.impulseDirection,
+        sampledYaw,
+        worldPullDirection,
+      );
+      queueRopePull(
+        rope,
+        pullOutput.acceptedPullDistance,
+        pullOutput.impulseMagnitude,
+        worldPullDirection,
+        traversalConfig.rope.reelSensitivity,
+        traversalConfig.pull.maximumPendingDistance,
+        traversalConfig.pull.maxImpulsePerPull,
+      );
     }
     expect(gesture.pendingShortenDistance).toBeGreaterThan(0);
     expect(gesture.accumulatedImpulse).toBeGreaterThan(0);
+    expect(rope.pendingPullImpulse).toBeGreaterThan(0);
+    expect(rope.pendingPullDirection.x).toBeLessThan(-0.99);
     expect(rope.active).toBe(false);
 
+    const beforeAttachment = {
+      position: { x: 0, y: 0, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      grounded: false,
+      physicsRemainder: 0,
+    };
+    stepTraversalPhysics(
+      beforeAttachment,
+      [rope],
+      { x: 0, z: 0 },
+      1 / 72,
+      { ...traversalConfig, physics: { ...traversalConfig.physics, gravity: 0 } },
+    );
+    expect(beforeAttachment.velocity).toEqual({ x: 0, y: 0, z: 0 });
+    expect(rope.pendingPullImpulse).toBeGreaterThan(0);
+
+    const playerYawAfterFlight = -Math.PI / 2;
+    const incorrectlyRerotatedDirection = { x: 0, y: 0, z: 0 };
+    playerLocalToWorldDirection(
+      pullOutput.impulseDirection,
+      playerYawAfterFlight,
+      incorrectlyRerotatedDirection,
+    );
+    expect(incorrectlyRerotatedDirection.x).toBeGreaterThan(0.99);
     const anchor = { x: 0, y: 8, z: -8 };
     attachRope(
       rope,
@@ -240,14 +286,8 @@ describe('physical hand pull integration', () => {
       100,
       0,
     );
-    queueRopePull(
-      rope,
-      gesture.pendingShortenDistance,
-      gesture.accumulatedImpulse,
-      traversalConfig.rope.reelSensitivity,
-      traversalConfig.pull.maximumPendingDistance,
-      traversalConfig.pull.maxImpulsePerPull,
-    );
+    rope.currentLength += 5;
+    rope.targetLength = rope.currentLength;
     const state = {
       position: { x: 0, y: 0, z: 0 },
       velocity: { x: 0, y: 0, z: 0 },
@@ -271,9 +311,10 @@ describe('physical hand pull integration', () => {
     );
     state.position = collision.position;
     state.grounded = resolveTraversalGrounded(true, steps, collision.landed);
-    expect(state.position.y).toBeGreaterThan(0);
-    expect(state.velocity.y).toBeGreaterThan(0);
-    expect(state.grounded).toBe(false);
+    expect(state.position.x).toBeLessThan(-0.05);
+    expect(state.velocity.x).toBeLessThan(-5);
+    expect(Math.abs(state.velocity.z)).toBeLessThan(1e-10);
+    expect(rope.pendingPullImpulse).toBe(0);
   });
 
   it('launches a grounded player from a light pull on a distant slack rope', () => {
@@ -291,9 +332,10 @@ describe('physical hand pull integration', () => {
     rope.targetLength = rope.currentLength;
     const gesture = createPullGestureState();
     const pullOutput: PullGestureResult = {
-      inwardSpeed: 0,
-      acceptedPullDistance: 0,
-      impulseMagnitude: 0,
+      movementSpeed: 0,
+          acceptedPullDistance: 0,
+          impulseMagnitude: 0,
+          impulseDirection: { x: 0, y: 0, z: 0 },
       pullStarted: false,
       phaseChanged: false,
     };
@@ -301,7 +343,7 @@ describe('physical hand pull integration', () => {
       ropeActive: true,
       ropeNearTaut: false,
       controllerPosition: hand,
-      controllerVelocity: { x: -0.12, y: 0, z: 0 },
+      controllerVelocity: { x: 0, y: -0.12, z: 0 },
       chestPosition: { x: 0, y: 1.35, z: 0 },
       deltaSeconds: 0.02,
     }, {
@@ -321,6 +363,7 @@ describe('physical hand pull integration', () => {
       rope,
       pullOutput.acceptedPullDistance,
       pullOutput.impulseMagnitude,
+      pullOutput.impulseDirection,
       traversalConfig.rope.reelSensitivity,
       traversalConfig.pull.maximumPendingDistance,
       traversalConfig.pull.maxImpulsePerPull,
@@ -349,16 +392,16 @@ describe('physical hand pull integration', () => {
     state.position = collision.position;
     state.grounded = resolveTraversalGrounded(true, steps, collision.landed);
     expect(state.position.y).toBeGreaterThan(0.02);
-    expect(state.velocity.y).toBeGreaterThan(2);
-    expect(state.velocity.z).toBeLessThan(-5);
+    expect(state.velocity.y).toBeGreaterThan(5);
+    expect(state.velocity.z).toBeCloseTo(0, 10);
     expect(state.grounded).toBe(false);
   });
 
-  it('lifts a grounded Quest-scale player after a normal hand-to-chest pull', () => {
+  it('moves a grounded player opposite a filtered hand-to-chest pull, not toward the anchor', () => {
     const frameSeconds = 1 / 90;
     const chest = { x: 0, y: 1.35, z: 0 };
     const initialHand = { x: 0, y: 1.35, z: -0.32 };
-    const anchor = { x: 0, y: 8, z: -8 };
+    const anchor = { x: 0, y: 8, z: 8 };
     const rope = createRopeState('left', 1.5, 80);
     attachRope(
       rope,
@@ -367,6 +410,8 @@ describe('physical hand pull integration', () => {
       0,
       0,
     );
+    rope.currentLength += 5;
+    rope.targetLength = rope.currentLength;
     const initialLength = rope.currentLength;
     const gesture = createPullGestureState();
     const motion = createControllerMotionState();
@@ -376,9 +421,10 @@ describe('physical hand pull integration', () => {
       trackingSpikeRejected: false,
     };
     const pullOutput: PullGestureResult = {
-      inwardSpeed: 0,
-      acceptedPullDistance: 0,
-      impulseMagnitude: 0,
+      movementSpeed: 0,
+          acceptedPullDistance: 0,
+          impulseMagnitude: 0,
+          impulseDirection: { x: 0, y: 0, z: 0 },
       pullStarted: false,
       phaseChanged: false,
     };
@@ -450,6 +496,7 @@ describe('physical hand pull integration', () => {
         rope,
         pullOutput.acceptedPullDistance,
         pullOutput.impulseMagnitude,
+        pullOutput.impulseDirection,
         traversalConfig.rope.reelSensitivity,
         traversalConfig.pull.maximumPendingDistance,
         traversalConfig.pull.maxImpulsePerPull,
@@ -482,8 +529,9 @@ describe('physical hand pull integration', () => {
 
     expect(pullDetected).toBe(true);
     expect(rope.currentLength).toBeLessThan(initialLength);
-    expect(state.position.y).toBeGreaterThan(0.15);
-    expect(state.velocity.y).toBeGreaterThan(0);
-    expect(state.grounded).toBe(false);
+    expect(state.position.z).toBeLessThan(-0.15);
+    expect(state.velocity.z).toBeLessThan(0);
+    expect(state.position.y).toBeCloseTo(0, 10);
+    expect(state.grounded).toBe(true);
   });
 });
