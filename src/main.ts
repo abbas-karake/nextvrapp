@@ -25,7 +25,6 @@ import {
   attachRope,
   beginRopeFlight,
   createRopeState,
-  discardSlackPullImpulse,
   queueRopePull,
   releaseRope,
   ropeAcceptsPullInput,
@@ -359,19 +358,8 @@ function updatePlayer(deltaSeconds: number): void {
       controller.controllerMotionResult,
     );
     const rope = controller.rope;
-    const anchor = rope?.anchorPoint;
-    const ropeNearTaut = Boolean(
-      rope?.active
-      && anchor
-      && Math.hypot(
-        anchor.x - controller.worldHandPosition.x,
-        anchor.y - controller.worldHandPosition.y,
-        anchor.z - controller.worldHandPosition.z,
-      ) >= rope.currentLength - traversalConfig.rope.slackTolerance,
-    );
-    if (rope) discardSlackPullImpulse(rope, ropeNearTaut);
     const pullInputActive = rope ? ropeAcceptsPullInput(rope) : false;
-    const pullInputNearTaut = rope?.lifecycle === 'flying' || ropeNearTaut;
+    const pullInputNearTaut = pullInputActive;
     if (controller.controllerMotionResult.trackingSpikeRejected) {
       ignorePullGestureSample(controller.pullGesture, controller.pullGestureResult);
     } else {
@@ -394,6 +382,7 @@ function updatePlayer(deltaSeconds: number): void {
           maximumTrackedSpeed: traversalConfig.pull.maximumTrackedSpeed,
           baseForce: traversalConfig.pull.baseForce,
           additionalForce: traversalConfig.pull.additionalForce,
+          minimumLaunchImpulse: traversalConfig.pull.minimumLaunchImpulse,
           maxImpulsePerPull: traversalConfig.pull.maxImpulsePerPull,
         },
         controller.pullGestureResult,

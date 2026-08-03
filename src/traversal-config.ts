@@ -28,6 +28,8 @@ export interface TraversalConfig {
     maximumPullRate: number;
     baseForce: number;
     additionalForce: number;
+    minimumLaunchImpulse: number;
+    minimumUpwardDirection: number;
     recoveryDistance: number;
     maxImpulsePerPull: number;
   };
@@ -95,7 +97,7 @@ export const traversalConfig: TraversalConfig = {
   },
   pull: {
     deadZoneSpeed: 0.08,
-    activationSpeed: 0.18,
+    activationSpeed: 0.1,
     maximumTrackedSpeed: 4,
     controllerVelocitySmoothing: 18,
     minimumArmExtension: 0.2,
@@ -103,8 +105,10 @@ export const traversalConfig: TraversalConfig = {
     maximumPullRate: 2,
     baseForce: 120,
     additionalForce: 850,
+    minimumLaunchImpulse: 6,
+    minimumUpwardDirection: 0.4,
     recoveryDistance: 0.12,
-    maxImpulsePerPull: 7.5,
+    maxImpulsePerPull: 12,
   },
   dualPull: {
     synchronizationWindowMs: 180,

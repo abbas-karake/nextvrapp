@@ -71,10 +71,6 @@ export function attachRope(
   rope.attachedAtTime = attachedAtTime;
 }
 
-export function discardSlackPullImpulse(rope: RopeState, ropeNearTaut: boolean): void {
-  if (rope.active && !ropeNearTaut) rope.pendingPullImpulse = 0;
-}
-
 export function queueRopePull(
   rope: RopeState,
   acceptedPullDistance: number,

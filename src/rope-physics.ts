@@ -147,17 +147,35 @@ export function stepTraversalPhysics(
       const distanceToAnchor = Math.hypot(toAnchorX, toAnchorY, toAnchorZ);
       const pendingPullImpulse = rope.pendingPullImpulse;
       rope.pendingPullImpulse = 0;
-      if (
-        pendingPullImpulse > 0
-        && distanceToAnchor > 1e-8
-        && distanceToAnchor >= rope.currentLength - config.rope.slackTolerance
-      ) {
+      if (pendingPullImpulse > 0 && distanceToAnchor > 1e-8) {
+        let directionX = toAnchorX / distanceToAnchor;
+        let directionY = toAnchorY / distanceToAnchor;
+        let directionZ = toAnchorZ / distanceToAnchor;
+        const minimumUpwardDirection = Math.max(
+          0,
+          Math.min(config.pull.minimumUpwardDirection, 1),
+        );
+        if (state.grounded && directionY < minimumUpwardDirection) {
+          const horizontalLength = Math.hypot(directionX, directionZ);
+          if (horizontalLength > 1e-8) {
+            const horizontalScale = Math.sqrt(1 - minimumUpwardDirection ** 2)
+              / horizontalLength;
+            directionX *= horizontalScale;
+            directionZ *= horizontalScale;
+            directionY = minimumUpwardDirection;
+          } else {
+            directionX = 0;
+            directionY = 1;
+            directionZ = 0;
+          }
+        }
+        const assistedDirectionLength = Math.hypot(directionX, directionY, directionZ);
         const impulseScale = pendingPullImpulse
           * config.comfort.pullStrengthScale
-          / distanceToAnchor;
-        pullImpulseX += toAnchorX * impulseScale;
-        pullImpulseY += toAnchorY * impulseScale;
-        pullImpulseZ += toAnchorZ * impulseScale;
+          / assistedDirectionLength;
+        pullImpulseX += directionX * impulseScale;
+        pullImpulseY += directionY * impulseScale;
+        pullImpulseZ += directionZ * impulseScale;
       }
       solveRopeTension(
         {

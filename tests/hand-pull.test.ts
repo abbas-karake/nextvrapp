@@ -26,14 +26,15 @@ function pullResult(): PullGestureResult {
 
 const pullTuning = {
   deadZoneSpeed: 0.08,
-  activationSpeed: 0.18,
-  minimumArmExtension: 0.35,
+  activationSpeed: 0.1,
+  minimumArmExtension: 0.2,
   recoveryDistance: 0.12,
   maximumPendingDistance: 0.65,
   maximumTrackedSpeed: 4,
   baseForce: 120,
   additionalForce: 850,
-  maxImpulsePerPull: 7.5,
+  minimumLaunchImpulse: 6,
+  maxImpulsePerPull: 12,
 };
 
 describe('player-local physical hand sampling', () => {
@@ -118,6 +119,23 @@ describe('player-local physical hand sampling', () => {
     expect(output.pullStarted).toBe(true);
     expect(output.acceptedPullDistance).toBeGreaterThan(0);
     expect(output.impulseMagnitude).toBeGreaterThan(0);
+  });
+
+  it('gives a light intentional pull a useful launch even while the attached rope is slack', () => {
+    const state = createPullGestureState();
+    const output = pullResult();
+    updatePullGesture(state, {
+      ropeActive: true,
+      ropeNearTaut: false,
+      controllerPosition: { x: 0.3, y: 1.2, z: 0 },
+      controllerVelocity: { x: -0.12, y: 0, z: 0 },
+      chestPosition: { x: 0, y: 1.2, z: 0 },
+      deltaSeconds: 0.02,
+    }, pullTuning, output);
+    expect(state.phase).toBe('pulling');
+    expect(output.pullStarted).toBe(true);
+    expect(output.impulseMagnitude).toBeGreaterThanOrEqual(6);
+    expect(output.impulseMagnitude).toBeLessThanOrEqual(12);
   });
 
   it('requires outward recovery before another full pull can start', () => {
@@ -220,7 +238,7 @@ describe('player-local physical hand sampling', () => {
     expect(fast.impulse).toBeLessThanOrEqual(pullTuning.maxImpulsePerPull);
   });
 
-  it('allows slow inward motion to reel without a full impulse', () => {
+  it('allows borderline inward motion below launch activation to reel without impulse', () => {
     const state = createPullGestureState();
     const output = pullResult();
     const chest = { x: 0, y: 1.2, z: 0 };
@@ -236,7 +254,7 @@ describe('player-local physical hand sampling', () => {
       ropeActive: true,
       ropeNearTaut: true,
       controllerPosition: { x: 0.598, y: 1.2, z: 0 },
-      controllerVelocity: { x: -0.12, y: 0, z: 0 },
+      controllerVelocity: { x: -0.09, y: 0, z: 0 },
       chestPosition: chest,
       deltaSeconds: 0.02,
     }, pullTuning, output);
@@ -341,7 +359,7 @@ describe('player-local physical hand sampling', () => {
     updatePullGesture(state, {
       ropeActive: true,
       ropeNearTaut: true,
-      controllerPosition: { x: 0.2, y: 1.2, z: 0 },
+      controllerPosition: { x: 0.15, y: 1.2, z: 0 },
       controllerVelocity: { x: 2, y: 0, z: 0 },
       chestPosition: { x: 0, y: 1.2, z: 0 },
       deltaSeconds: 0.1,
@@ -394,7 +412,7 @@ describe('player-local physical hand sampling', () => {
     updatePullGesture(state, {
       ropeActive: true,
       ropeNearTaut: true,
-      controllerPosition: { x: 0.2, y: 1.2, z: 0 },
+      controllerPosition: { x: 0.15, y: 1.2, z: 0 },
       controllerVelocity: { x: 0, y: 0, z: 0 },
       chestPosition: chest,
       deltaSeconds: 0.02,
@@ -403,7 +421,7 @@ describe('player-local physical hand sampling', () => {
     updatePullGesture(state, {
       ropeActive: true,
       ropeNearTaut: true,
-      controllerPosition: { x: 0.19, y: 1.2, z: 0 },
+      controllerPosition: { x: 0.14, y: 1.2, z: 0 },
       controllerVelocity: { x: -1, y: 0, z: 0 },
       chestPosition: chest,
       deltaSeconds: 0.02,

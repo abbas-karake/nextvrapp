@@ -7,6 +7,44 @@ function emptyResult(): RopeForceResult {
   return { x: 99, y: 99, z: 99, tension: 99, stretch: 99, radialVelocity: 99, taut: true };
 }
 
+function runQueuedLaunch(
+  anchor: { x: number; y: number; z: number },
+  ropeCount = 1,
+): { x: number; y: number; z: number } {
+  const ropes = Array.from({ length: ropeCount }, (_, index) => {
+    const rope = createRopeState(index === 0 ? 'left' : 'right', 1.5, 80);
+    attachRope(
+      rope,
+      { point: anchor, normal: { x: 0, y: -1, z: 0 }, objectId: `anchor-${index}` },
+      { x: 0, y: 0, z: 0 },
+      0,
+      0,
+    );
+    rope.currentLength = Math.hypot(anchor.x, anchor.y, anchor.z) + 10;
+    rope.targetLength = rope.currentLength;
+    rope.pendingPullImpulse = 6;
+    return rope;
+  });
+  const state = {
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    grounded: true,
+    physicsRemainder: 0,
+  };
+  stepTraversalPhysics(
+    state,
+    ropes,
+    { x: 0, z: 0 },
+    1 / 72,
+    {
+      ...traversalConfig,
+      physics: { ...traversalConfig.physics, gravity: 0 },
+      comfort: { ...traversalConfig.comfort, maximumSpeed: 100 },
+    },
+  );
+  return state.velocity;
+}
+
 describe('tension-only rope physics', () => {
   it('preserves grounded state on render frames with no fixed physics step', () => {
     expect(resolveTraversalGrounded(true, 0, false)).toBe(true);
@@ -279,7 +317,7 @@ describe('tension-only rope physics', () => {
     expect(rope.pendingPullImpulse).toBe(0);
   });
 
-  it('does not apply a queued pull impulse after the rope goes slack', () => {
+  it('applies a queued pull launch toward an attached anchor even while the rope is slack', () => {
     const rope = createRopeState('left', 1.5, 80);
     attachRope(
       rope,
@@ -304,8 +342,66 @@ describe('tension-only rope physics', () => {
       1 / 72,
       { ...traversalConfig, physics: { ...traversalConfig.physics, gravity: 0 } },
     );
-    expect(state.velocity).toEqual({ x: 5, y: 0, z: 0 });
+    expect(state.velocity.x).toBeCloseTo(5, 10);
+    expect(state.velocity.y).toBeGreaterThanOrEqual(3);
     expect(rope.pendingPullImpulse).toBe(0);
+  });
+
+  it('keeps launch strength independent of distance and gives low-angle anchors useful lift', () => {
+    const near = runQueuedLaunch({ x: 0, y: 0.4, z: -10 });
+    const far = runQueuedLaunch({ x: 0, y: 2, z: -50 });
+    expect(Math.hypot(near.x, near.y, near.z)).toBeGreaterThanOrEqual(5.9);
+    expect(Math.hypot(far.x, far.y, far.z)).toBeCloseTo(
+      Math.hypot(near.x, near.y, near.z),
+      10,
+    );
+    expect(far.y).toBeCloseTo(2.4, 10);
+    expect(far.z).toBeLessThan(-5);
+  });
+
+  it('makes a high distant anchor at least as effective upward as a low distant anchor', () => {
+    const low = runQueuedLaunch({ x: 0, y: 2, z: -50 });
+    const high = runQueuedLaunch({ x: 0, y: 30, z: -50 });
+    expect(low.y).toBeCloseTo(2.4, 10);
+    expect(high.y).toBeGreaterThan(low.y);
+  });
+
+  it('does not apply grounded upward assistance to an airborne pull toward a lower anchor', () => {
+    const rope = createRopeState('left', 1.5, 80);
+    attachRope(
+      rope,
+      { point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, objectId: 'lower-anchor' },
+      { x: 0, y: 10, z: 0 },
+      0,
+      0,
+    );
+    rope.currentLength = 20;
+    rope.targetLength = 20;
+    rope.pendingPullImpulse = 6;
+    const state = {
+      position: { x: 0, y: 10, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      grounded: false,
+      physicsRemainder: 0,
+    };
+    stepTraversalPhysics(
+      state,
+      [rope],
+      { x: 0, z: 0 },
+      1 / 72,
+      { ...traversalConfig, physics: { ...traversalConfig.physics, gravity: 0 } },
+    );
+    expect(state.velocity.y).toBeLessThanOrEqual(-6);
+  });
+
+  it('makes two attached rope pulls stronger than one while remaining finite', () => {
+    const single = runQueuedLaunch({ x: 0, y: 20, z: -50 }, 1);
+    const dual = runQueuedLaunch({ x: 0, y: 20, z: -50 }, 2);
+    const singleSpeed = Math.hypot(single.x, single.y, single.z);
+    const dualSpeed = Math.hypot(dual.x, dual.y, dual.z);
+    expect(singleSpeed).toBeGreaterThanOrEqual(5.9);
+    expect(dualSpeed).toBeGreaterThan(singleSpeed * 1.8);
+    expect(Object.values(dual).every(Number.isFinite)).toBe(true);
   });
 
   it('fades aerial control to zero at its maximum influence speed', () => {

@@ -13,7 +13,6 @@ import {
   attachRope,
   beginRopeFlight,
   createRopeState,
-  discardSlackPullImpulse,
   queueRopePull,
   releaseRope,
   ropeAcceptsPullInput,
@@ -46,6 +45,7 @@ function runPull(inwardSpeed: number): { upwardVelocity: number; ropeLength: num
     maximumTrackedSpeed: traversalConfig.pull.maximumTrackedSpeed,
     baseForce: traversalConfig.pull.baseForce,
     additionalForce: traversalConfig.pull.additionalForce,
+    minimumLaunchImpulse: traversalConfig.pull.minimumLaunchImpulse,
     maxImpulsePerPull: traversalConfig.pull.maxImpulsePerPull,
   };
   const chest = { x: 0, y: 1.2, z: 0 };
@@ -99,7 +99,7 @@ describe('physical hand pull integration', () => {
     expect(fast.upwardVelocity).toBeGreaterThan(slow.upwardVelocity);
   });
 
-  it('discards queued propulsion across a zero-step slack interval', () => {
+  it('preserves an attached-rope launch across a zero-step slack interval', () => {
     const rope = createRopeState('left', 1.5, 80);
     attachRope(
       rope,
@@ -108,24 +108,37 @@ describe('physical hand pull integration', () => {
       0,
       0,
     );
-    queueRopePull(rope, 0, 3, 1, 0.65, 7.5);
-    discardSlackPullImpulse(rope, false);
-    expect(rope.pendingPullImpulse).toBe(0);
+    rope.currentLength = 12;
+    rope.targetLength = 12;
+    queueRopePull(rope, 0, 3, 1, 0.65, 12);
     const state = {
       position: { x: 0, y: 0, z: 0 },
       velocity: { x: 4, y: 0, z: 0 },
       grounded: false,
       physicsRemainder: 0,
     };
-    stepTraversalPhysics(
+    const configWithoutGravity = {
+      ...traversalConfig,
+      physics: { ...traversalConfig.physics, gravity: 0 },
+    };
+    expect(stepTraversalPhysics(
       state,
       [rope],
       { x: 0, z: 0 },
-      1 / 72,
-      { ...traversalConfig, physics: { ...traversalConfig.physics, gravity: 0 } },
-    );
-    expect(state.velocity.y).toBe(0);
+      1 / 144,
+      configWithoutGravity,
+    )).toBe(0);
+    expect(rope.pendingPullImpulse).toBe(3);
+    expect(stepTraversalPhysics(
+      state,
+      [rope],
+      { x: 0, z: 0 },
+      1 / 144,
+      configWithoutGravity,
+    )).toBe(1);
+    expect(state.velocity.y).toBeGreaterThanOrEqual(3);
     expect(state.velocity.x).toBe(4);
+    expect(rope.pendingPullImpulse).toBe(0);
   });
 
   it('does not apply a flight pull after the shot is released or misses', () => {
@@ -211,6 +224,7 @@ describe('physical hand pull integration', () => {
         maximumTrackedSpeed: traversalConfig.pull.maximumTrackedSpeed,
         baseForce: traversalConfig.pull.baseForce,
         additionalForce: traversalConfig.pull.additionalForce,
+        minimumLaunchImpulse: traversalConfig.pull.minimumLaunchImpulse,
         maxImpulsePerPull: traversalConfig.pull.maxImpulsePerPull,
       }, pullOutput);
     }
@@ -259,6 +273,84 @@ describe('physical hand pull integration', () => {
     state.grounded = resolveTraversalGrounded(true, steps, collision.landed);
     expect(state.position.y).toBeGreaterThan(0);
     expect(state.velocity.y).toBeGreaterThan(0);
+    expect(state.grounded).toBe(false);
+  });
+
+  it('launches a grounded player from a light pull on a distant slack rope', () => {
+    const anchor = { x: 0, y: 2, z: -50 };
+    const hand = { x: 0.3, y: 1.35, z: 0 };
+    const rope = createRopeState('left', 1.5, 80);
+    attachRope(
+      rope,
+      { point: anchor, normal: { x: 0, y: -1, z: 0 }, objectId: 'distant-low-anchor' },
+      hand,
+      0,
+      0,
+    );
+    rope.currentLength += 10;
+    rope.targetLength = rope.currentLength;
+    const gesture = createPullGestureState();
+    const pullOutput: PullGestureResult = {
+      inwardSpeed: 0,
+      acceptedPullDistance: 0,
+      impulseMagnitude: 0,
+      pullStarted: false,
+      phaseChanged: false,
+    };
+    updatePullGesture(gesture, {
+      ropeActive: true,
+      ropeNearTaut: false,
+      controllerPosition: hand,
+      controllerVelocity: { x: -0.12, y: 0, z: 0 },
+      chestPosition: { x: 0, y: 1.35, z: 0 },
+      deltaSeconds: 0.02,
+    }, {
+      deadZoneSpeed: traversalConfig.pull.deadZoneSpeed,
+      activationSpeed: traversalConfig.pull.activationSpeed,
+      minimumArmExtension: traversalConfig.pull.minimumArmExtension,
+      recoveryDistance: traversalConfig.pull.recoveryDistance,
+      maximumPendingDistance: traversalConfig.pull.maximumPendingDistance,
+      maximumTrackedSpeed: traversalConfig.pull.maximumTrackedSpeed,
+      baseForce: traversalConfig.pull.baseForce,
+      additionalForce: traversalConfig.pull.additionalForce,
+      minimumLaunchImpulse: traversalConfig.pull.minimumLaunchImpulse,
+      maxImpulsePerPull: traversalConfig.pull.maxImpulsePerPull,
+    }, pullOutput);
+    expect(pullOutput.impulseMagnitude).toBeGreaterThanOrEqual(6);
+    queueRopePull(
+      rope,
+      pullOutput.acceptedPullDistance,
+      pullOutput.impulseMagnitude,
+      traversalConfig.rope.reelSensitivity,
+      traversalConfig.pull.maximumPendingDistance,
+      traversalConfig.pull.maxImpulsePerPull,
+    );
+    const state = {
+      position: { x: 0, y: 0, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      grounded: true,
+      physicsRemainder: 0,
+    };
+    const steps = stepTraversalPhysics(
+      state,
+      [rope],
+      { x: 0, z: 0, leftRopeOffset: hand },
+      1 / 72,
+      traversalConfig,
+    );
+    const collision = moveBodyWithCollisionsSubstepped(
+      { x: 0, y: 0, z: 0 },
+      state.position,
+      0.32,
+      2.2,
+      [],
+      100,
+    );
+    state.position = collision.position;
+    state.grounded = resolveTraversalGrounded(true, steps, collision.landed);
+    expect(state.position.y).toBeGreaterThan(0.02);
+    expect(state.velocity.y).toBeGreaterThan(2);
+    expect(state.velocity.z).toBeLessThan(-5);
     expect(state.grounded).toBe(false);
   });
 
@@ -350,6 +442,7 @@ describe('physical hand pull integration', () => {
         maximumTrackedSpeed: traversalConfig.pull.maximumTrackedSpeed,
         baseForce: traversalConfig.pull.baseForce,
         additionalForce: traversalConfig.pull.additionalForce,
+        minimumLaunchImpulse: traversalConfig.pull.minimumLaunchImpulse,
         maxImpulsePerPull: traversalConfig.pull.maxImpulsePerPull,
       }, pullOutput);
       pullDetected ||= pullOutput.acceptedPullDistance > 0;

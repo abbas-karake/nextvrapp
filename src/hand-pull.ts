@@ -125,6 +125,7 @@ export interface PullGestureTuning {
   maximumTrackedSpeed: number;
   baseForce: number;
   additionalForce: number;
+  minimumLaunchImpulse: number;
   maxImpulsePerPull: number;
 }
 
@@ -170,7 +171,7 @@ export function updatePullGesture(
   output.pullStarted = false;
   output.phaseChanged = false;
 
-  if (!input.ropeActive || !input.ropeNearTaut) {
+  if (!input.ropeActive) {
     output.phaseChanged = state.phase !== 'idle';
     state.phase = 'idle';
     state.accumulatedPullDistance = 0;
@@ -267,7 +268,10 @@ export function updatePullGesture(
       Math.min((output.inwardSpeed - tuning.activationSpeed) / pullRange, 1),
     );
     const pullForce = tuning.baseForce + normalizedPull * tuning.additionalForce;
-    const requestedImpulse = output.acceptedPullDistance * pullForce;
+    const requestedImpulse = (
+      output.acceptedPullDistance * pullForce
+      + (output.pullStarted ? tuning.minimumLaunchImpulse : 0)
+    );
     const availableImpulse = Math.max(0, tuning.maxImpulsePerPull - state.accumulatedImpulse);
     output.impulseMagnitude = Math.min(requestedImpulse, availableImpulse);
     state.accumulatedImpulse += output.impulseMagnitude;
