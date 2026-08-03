@@ -193,11 +193,9 @@ export function updatePullGesture(
   }
 
   if (state.phase === 'idle') {
-    if (extension >= tuning.minimumArmExtension) {
-      state.phase = 'armed';
-      output.phaseChanged = true;
-    }
-    return output;
+    if (extension < tuning.minimumArmExtension) return output;
+    state.phase = 'armed';
+    output.phaseChanged = true;
   }
 
   if (state.phase === 'armed' && extension < tuning.minimumArmExtension) {

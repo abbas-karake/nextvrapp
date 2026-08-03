@@ -98,7 +98,7 @@ export const traversalConfig: TraversalConfig = {
     activationSpeed: 0.18,
     maximumTrackedSpeed: 4,
     controllerVelocitySmoothing: 18,
-    minimumArmExtension: 0.35,
+    minimumArmExtension: 0.2,
     maximumPendingDistance: 0.65,
     maximumPullRate: 2,
     baseForce: 120,

@@ -103,6 +103,23 @@ describe('player-local physical hand sampling', () => {
     expect(output.speed).toBe(0);
   });
 
+  it('starts a hard pull on the same sample that arms an extended hand', () => {
+    const state = createPullGestureState();
+    const output = pullResult();
+    updatePullGesture(state, {
+      ropeActive: true,
+      ropeNearTaut: true,
+      controllerPosition: { x: 0.24, y: 1.2, z: 0 },
+      controllerVelocity: { x: -2, y: 0, z: 0 },
+      chestPosition: { x: 0, y: 1.2, z: 0 },
+      deltaSeconds: 0.02,
+    }, { ...pullTuning, minimumArmExtension: 0.2 }, output);
+    expect(state.phase).toBe('pulling');
+    expect(output.pullStarted).toBe(true);
+    expect(output.acceptedPullDistance).toBeGreaterThan(0);
+    expect(output.impulseMagnitude).toBeGreaterThan(0);
+  });
+
   it('requires outward recovery before another full pull can start', () => {
     const state = createPullGestureState();
     const output = pullResult();

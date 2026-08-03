@@ -28,6 +28,7 @@ import {
   discardSlackPullImpulse,
   queueRopePull,
   releaseRope,
+  ropeAcceptsPullInput,
 } from './traversal-controller';
 import type { RopeState } from './traversal-types';
 import { VisualTether } from './tether';
@@ -369,14 +370,16 @@ function updatePlayer(deltaSeconds: number): void {
       ) >= rope.currentLength - traversalConfig.rope.slackTolerance,
     );
     if (rope) discardSlackPullImpulse(rope, ropeNearTaut);
+    const pullInputActive = rope ? ropeAcceptsPullInput(rope) : false;
+    const pullInputNearTaut = rope?.lifecycle === 'flying' || ropeNearTaut;
     if (controller.controllerMotionResult.trackingSpikeRejected) {
       ignorePullGestureSample(controller.pullGesture, controller.pullGestureResult);
     } else {
       updatePullGesture(
         controller.pullGesture,
         {
-          ropeActive: Boolean(rope?.active),
-          ropeNearTaut,
+          ropeActive: pullInputActive,
+          ropeNearTaut: pullInputNearTaut,
           controllerPosition: controller.localHandPosition,
           controllerVelocity: controller.controllerMotionResult.velocity,
           chestPosition: chestLocalPosition,
@@ -427,6 +430,15 @@ function updatePlayer(deltaSeconds: number): void {
           performance.now(),
           traversalConfig.rope.attachmentPreload,
         );
+        queueRopePull(
+          controller.rope,
+          controller.pullGesture.pendingShortenDistance,
+          controller.pullGesture.accumulatedImpulse,
+          traversalConfig.rope.reelSensitivity,
+          traversalConfig.pull.maximumPendingDistance,
+          traversalConfig.pull.maxImpulsePerPull,
+        );
+        controller.pullGesture.pendingShortenDistance = 0;
         gameAudio.play('attach');
       }
     } else if (tetherEvent === 'missed' && controller.rope) {

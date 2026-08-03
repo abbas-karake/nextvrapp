@@ -34,6 +34,10 @@ export function createRopeState(
   };
 }
 
+export function ropeAcceptsPullInput(rope: RopeState): boolean {
+  return rope.active || rope.lifecycle === 'flying';
+}
+
 export function beginRopeFlight(rope: RopeState): void {
   releaseRope(rope);
   rope.lifecycle = 'flying';
