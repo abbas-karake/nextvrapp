@@ -45,6 +45,13 @@ export interface TraversalConfig {
     minimumAssistSpeed: number;
     maximumAssistedSpeed: number;
     releaseAssist: number;
+    releaseBoostScale: number;
+    releaseMaximumBonusSpeed: number;
+  };
+  swingPendulum: {
+    autoReelRate: number;
+    autoReelSpeedFloor: number;
+    autoReelSpeedCeiling: number;
   };
   airControl: {
     acceleration: number;
@@ -119,24 +126,31 @@ export const traversalConfig: TraversalConfig = {
   swing: {
     assist: 30,
     minimumAssistSpeed: 2,
-    maximumAssistedSpeed: 28,
+    maximumAssistedSpeed: 38,
     releaseAssist: 0.15,
+    releaseBoostScale: 1.12,
+    releaseMaximumBonusSpeed: 3.5,
+  },
+  swingPendulum: {
+    autoReelRate: 1.6,
+    autoReelSpeedFloor: 6,
+    autoReelSpeedCeiling: 30,
   },
   airControl: {
-    acceleration: 3.5,
-    maximumInfluenceSpeed: 25,
+    acceleration: 9,
+    maximumInfluenceSpeed: 60,
   },
   targeting: {
     assistEnabled: true,
-    assistConeAngleDegrees: 4,
-    assistSphereRadius: 0.5,
-    maximumAssistRays: 9,
+    assistConeAngleDegrees: 10,
+    assistSphereRadius: 1.6,
+    maximumAssistRays: 13,
   },
   comfort: {
     vignetteEnabled: false,
     vignetteStrength: 0.35,
     vignetteStartSpeed: 12,
-    maximumSpeed: 28,
+    maximumSpeed: 42,
     accelerationScale: 1,
     pullStrengthScale: 1,
     swingAssistScale: 1,

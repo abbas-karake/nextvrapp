@@ -207,7 +207,7 @@ describe('tension-only rope physics', () => {
     expect([output.x, output.y, output.z, output.tension].every(Number.isFinite)).toBe(true);
   });
 
-  it('adds inward rope acceleration without replacing tangential momentum', () => {
+  it('hard-constrains an overstretched rope while preserving forward tangential momentum', () => {
     const rope = createRopeState('left', 1.5, 80);
     attachRope(
       rope,
@@ -235,8 +235,15 @@ describe('tension-only rope physics', () => {
         airControl: { ...traversalConfig.airControl, acceleration: 0 },
       },
     );
-    expect(state.velocity.x).toBeCloseTo(10, 10);
-    expect(state.velocity.y).toBeGreaterThan(-2);
+    // Pendulum constraint satisfied: the body never ends beyond rope length.
+    const distanceToAnchor = Math.hypot(state.position.x, state.position.y - 5, state.position.z);
+    expect(distanceToAnchor).toBeLessThanOrEqual(rope.currentLength + 0.05);
+    // Outward radial velocity removed; forward momentum kept.
+    const normalX = state.position.x / Math.max(distanceToAnchor, 1e-6);
+    const normalY = (state.position.y - 5) / Math.max(distanceToAnchor, 1e-6);
+    const outwardSpeed = state.velocity.x * normalX + state.velocity.y * normalY;
+    expect(outwardSpeed).toBeLessThanOrEqual(0.01);
+    expect(state.velocity.x).toBeGreaterThan(9);
     expect(state.position.x).toBeGreaterThan(0);
   });
 
@@ -496,7 +503,7 @@ describe('tension-only rope physics', () => {
     expect(Object.values(velocity).every(Number.isFinite)).toBe(true);
   });
 
-  it('fades aerial control to zero at its maximum influence speed', () => {
+  it('keeps steering authority alive at high speed instead of fading it out', () => {
     const state = {
       position: { x: 0, y: 10, z: 0 },
       velocity: { x: 25, y: 0, z: 0 },
@@ -514,7 +521,7 @@ describe('tension-only rope physics', () => {
         comfort: { ...traversalConfig.comfort, maximumSpeed: 100 },
       },
     );
-    expect(state.velocity.x).toBe(25);
+    expect(state.velocity.x).toBeGreaterThan(25);
   });
 
   it('enforces the configured maximum traversal speed', () => {

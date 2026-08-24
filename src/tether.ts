@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { TetherConstraint } from './swing';
+import { traversalConfig } from './traversal-config';
 import type { RopeAttachment } from './traversal-types';
 
 export type GripTetherAction = 'idle' | 'fire' | 'hold' | 'release';
@@ -64,8 +65,55 @@ export class VisualTether {
     const normalizedDirection = direction.clone().normalize();
     this.raycaster.set(origin, normalizedDirection);
     this.raycaster.near = 0.15;
-    this.raycaster.far = 80;
-    const hit = this.raycaster.intersectObjects(targets, true)[0];
+    this.raycaster.far = traversalConfig.rope.maxRange;
+    const directHit = this.raycaster.intersectObjects(targets, true)[0];
+    // Aim assist: when the centre ray misses (or hits a non-swingable
+    // blocker), sweep a small cone of neighbouring rays so near-miss shots
+    // still find the building edge the player clearly meant to hit.
+    let hit = directHit;
+    if (
+      !hit
+      || (() => {
+        let swingObject: THREE.Object3D | null = hit!.object;
+        while (swingObject && swingObject.userData.swingable !== true) {
+          swingObject = swingObject.parent;
+        }
+        return !(swingObject && hit!.distance >= traversalConfig.rope.minimumAnchorDistance);
+      })()
+    ) {
+      const assist = traversalConfig.targeting;
+      if (assist.assistEnabled) {
+        const coneRadians = THREE.MathUtils.degToRad(assist.assistConeAngleDegrees);
+        const ringCount = assist.maximumAssistRays >= 9 ? 2 : 1;
+        const raysPerRing = Math.max(4, Math.floor(assist.maximumAssistRays / ringCount));
+        const up = Math.abs(normalizedDirection.y) < 0.9
+          ? new THREE.Vector3(0, 1, 0)
+          : new THREE.Vector3(1, 0, 0);
+        const right = new THREE.Vector3().crossVectors(normalizedDirection, up).normalize();
+        const trueUp = new THREE.Vector3().crossVectors(right, normalizedDirection).normalize();
+        outer: for (let ring = 1; ring <= ringCount; ring += 1) {
+          const angle = coneRadians * (ring / ringCount);
+          for (let ray = 0; ray < raysPerRing; ray += 1) {
+            const theta = (ray / raysPerRing) * Math.PI * 2;
+            const offsetDirection = normalizedDirection.clone()
+              .addScaledVector(right, Math.cos(theta) * Math.sin(angle))
+              .addScaledVector(trueUp, Math.sin(theta) * Math.sin(angle))
+              .normalize();
+            this.raycaster.set(origin, offsetDirection);
+            const assistedHit = this.raycaster.intersectObjects(targets, true)[0];
+            if (!assistedHit) continue;
+            let swingObject: THREE.Object3D | null = assistedHit.object;
+            while (swingObject && swingObject.userData.swingable !== true) {
+              swingObject = swingObject.parent;
+            }
+            if (swingObject && assistedHit.distance >= traversalConfig.rope.minimumAnchorDistance) {
+              hit = assistedHit;
+              break outer;
+            }
+          }
+        }
+      }
+    }
     if (hit) {
       this.target.copy(hit.point);
       let swingObject: THREE.Object3D | null = hit.object;

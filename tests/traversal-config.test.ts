@@ -19,9 +19,15 @@ describe('traversal tuning configuration', () => {
     expect(traversalConfig.pull.minimumLaunchImpulse).toBe(6);
     expect(traversalConfig.pull.maxImpulsePerPull).toBe(12);
     expect(traversalConfig.dualPull.maximumMultiplier).toBe(1.25);
-    expect(traversalConfig.swing.maximumAssistedSpeed).toBe(28);
-    expect(traversalConfig.targeting.assistConeAngleDegrees).toBe(4);
+    expect(traversalConfig.swing.maximumAssistedSpeed).toBe(38);
+    expect(traversalConfig.swing.releaseBoostScale).toBeGreaterThan(1);
+    expect(traversalConfig.swingPendulum.autoReelRate).toBeGreaterThan(0);
+    expect(traversalConfig.swingPendulum.autoReelSpeedCeiling)
+      .toBeGreaterThan(traversalConfig.swingPendulum.autoReelSpeedFloor);
+    expect(traversalConfig.targeting.assistConeAngleDegrees).toBe(10);
     expect(traversalConfig.comfort.cameraRollEnabled).toBe(false);
     expect(traversalConfig.comfort.impactShakeStrength).toBe(0);
+    expect(traversalConfig.comfort.maximumSpeed)
+      .toBeGreaterThanOrEqual(traversalConfig.swing.maximumAssistedSpeed);
   });
 });

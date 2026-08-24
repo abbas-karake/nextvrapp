@@ -20,7 +20,12 @@ import {
 import { getHandPose, isJumpPressed, readThumbstick, ropeButtonAction, type GamepadLike, type RopeButtonAction } from './input';
 import { applyDeadzone, moveFromViewDirection } from './locomotion';
 import { shouldUseGroundLocomotion } from './swing';
-import { resolveTraversalGrounded, stepTraversalPhysics, type TraversalPhysicsState } from './rope-physics';
+import {
+  applyReleaseBoost,
+  resolveTraversalGrounded,
+  stepTraversalPhysics,
+  type TraversalPhysicsState,
+} from './rope-physics';
 import { traversalConfig } from './traversal-config';
 import {
   attachRope,
@@ -170,6 +175,17 @@ function resetControllerPullTracking(state: ControllerState): void {
 }
 
 function releaseControllerTether(state: ControllerState, clearPending = false): void {
+  const wasSwinging = state.rope?.active === true;
+  if (wasSwinging && !motionState.grounded) {
+    applyReleaseBoost(
+      motionState.velocity,
+      viewForward.x,
+      viewForward.z,
+      traversalConfig.swing.releaseAssist,
+      traversalConfig.swing.releaseBoostScale,
+      traversalConfig.swing.releaseMaximumBonusSpeed,
+    );
+  }
   const visualReleased = state.tether.release();
   const ropeReleased = state.rope ? releaseRope(state.rope) : false;
   if (visualReleased || ropeReleased) gameAudio.play('release');
